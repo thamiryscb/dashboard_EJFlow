@@ -1,168 +1,255 @@
+# 📊 Dashboard EJFlow
 
-# EJFlow — Observatório de Projetos
+Dashboard interativo desenvolvido em **Python e Streamlit**, integrado a um banco de dados **MySQL**, com o objetivo de facilitar a visualização, o gerenciamento e a análise de informações relacionadas a empresas e projetos.
 
-Sistema web desenvolvido para o gerenciamento e acompanhamento de projetos em empresas juniores, utilizando **Python, Streamlit, Plotly e MySQL**.
+O projeto utiliza **Docker e Docker Compose** para executar a aplicação e o banco de dados em contêineres independentes, proporcionando maior portabilidade, padronização do ambiente e facilidade de execução.
 
-O EJFlow permite organizar informações sobre empresas, clientes, membros, projetos, sprints e tarefas, integrando operações de gerenciamento de dados a dashboards com indicadores de desempenho.
+## 🚀 Funcionalidades
 
-## Funcionalidades
+- Visualização interativa de gráficos e indicadores.
+- Consulta de informações armazenadas no MySQL.
+- Gerenciamento de empresas, incluindo cadastro e exclusão.
+- Atualização e visualização de dados pela interface Streamlit.
+- Integração entre aplicação e banco de dados utilizando Docker.
 
-### Dashboard e indicadores
+## 🛠️ Tecnologias utilizadas
 
-- **Visão geral:** quantidade de empresas, projetos, sprints e tarefas, além da taxa de conclusão.
-- **Projetos:** distribuição de tarefas, volume de trabalho e acompanhamento das atividades.
-- **Sprints e tarefas:** calendário, estados das sprints, tarefas concluídas e pendentes.
-- **Clientes e equipes:** informações sobre clientes, membros e empresas.
-- **Indicadores gerenciais:** gráficos e métricas calculados a partir dos registros do MySQL.
-- **Filtros interativos:** análise das informações conforme os registros selecionados.
-
-### Operações CRUD
-
-O sistema possui uma interface de gerenciamento integrada ao banco de dados MySQL.
-
-| Operação | Funcionalidade |
+| Tecnologia | Finalidade |
 |---|---|
-| **CREATE — INSERT** | Cadastro de empresas, clientes, membros, projetos, sprints e tarefas, além da associação entre clientes e projetos. |
-| **READ — SELECT** | Consulta dos registros armazenados e visualização das informações nos dashboards. |
-| **UPDATE** | Atualização do estado das tarefas e associação de tarefas às sprints. |
-| **DELETE** | Exclusão de empresas, clientes, membros, projetos, sprints e tarefas, além da remoção de associações entre clientes e projetos. |
+| Python | Desenvolvimento da aplicação |
+| Streamlit | Interface web e dashboard |
+| MySQL 8.0 | Banco de dados relacional |
+| Pandas | Manipulação e análise de dados |
+| Plotly | Visualização interativa de dados |
+| Docker | Conteinerização da aplicação |
+| Docker Compose | Gerenciamento dos contêineres |
+| Git e GitHub | Versionamento do projeto |
 
-As operações de atualização disponíveis concentram-se nos estados e vínculos das tarefas. As exclusões respeitam as restrições de integridade referencial definidas no banco.
+## 🐳 Arquitetura da aplicação
 
-## Tecnologias utilizadas
+A aplicação utiliza dois serviços principais:
 
-- **Python:** desenvolvimento da aplicação.
-- **Streamlit:** interface web e formulários.
-- **Plotly:** gráficos interativos.
-- **MySQL:** armazenamento e gerenciamento dos dados.
-- **mysql-connector-python:** comunicação entre Python e MySQL.
-- **pandas:** organização e apresentação das informações.
+**Streamlit (`app`):** responsável pela interface web, apresentação dos gráficos e interação com o usuário.
 
-## Estrutura do banco de dados
+**MySQL (`db`):** responsável pelo armazenamento e gerenciamento das informações utilizadas pelo dashboard.
 
-O banco operacional possui sete tabelas:
+Os serviços comunicam-se pela rede interna do Docker Compose.
 
-| Tabela | Finalidade |
-|---|---|
-| `empresas` | Informações das empresas juniores. |
-| `clientes` | Cadastro dos clientes. |
-| `membros` | Integrantes vinculados às empresas. |
-| `projetos` | Projetos e empresas responsáveis. |
-| `sprints` | Ciclos de desenvolvimento dos projetos. |
-| `tarefas` | Atividades, estados e vínculos com projetos e sprints. |
-| `demanda` | Associação entre clientes e projetos. |
+```text
+                 Usuário
+                    |
+                    v
+             Navegador Web
+                    |
+                    v
+           localhost:8503
+                    |
+                    v
+        +---------------------+
+        | Streamlit Dashboard |
+        |    Container app    |
+        +---------------------+
+                    |
+                    | Rede Docker
+                    v
+        +---------------------+
+        |        MySQL        |
+        |    Container db     |
+        |     Porta 3306      |
+        +---------------------+
+                    |
+                    v
+              Volume Docker
+              (mysql_data)
+```
 
-O modelo relacional utiliza chaves primárias e estrangeiras para estabelecer os relacionamentos e preservar a integridade dos dados.
+## 📋 Pré-requisitos
 
-## Como executar
+Para executar o projeto utilizando Docker, é necessário instalar:
+
+- [Git](https://git-scm.com/)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+
+Não é necessário instalar Python ou MySQL diretamente na máquina para executar a aplicação conteinerizada.
+
+## ⚙️ Instalação e execução
 
 ### 1. Clonar o repositório
 
-```powershell
+```bash
 git clone https://github.com/thamiryscb/dashboard_EJFlow.git
 cd dashboard_EJFlow
 ```
 
-### 2. Instalar as dependências
+### 2. Configurar as variáveis de ambiente
 
-É necessário possuir Python e MySQL instalados.
+Crie um arquivo `.env` na raiz do projeto, utilizando o seguinte modelo:
 
-No terminal do VS Code, execute:
-
-```powershell
-py -m pip install -r requirements.txt
+```env
+MYSQL_DATABASE=projeto_banco_de_dados
+MYSQL_USER=ejflow
+MYSQL_PASSWORD=substitua_por_uma_senha_segura
+MYSQL_ROOT_PASSWORD=substitua_por_outra_senha_segura
 ```
 
-### 3. Importar o banco de dados
+As credenciais serão utilizadas pelo Docker Compose para configurar o banco de dados e permitir a comunicação com a aplicação.
 
-O projeto necessita de um banco MySQL contendo as tabelas e os relacionamentos utilizados pela aplicação.
+**Importante:** o arquivo `.env` contém informações sensíveis e não deve ser enviado ao GitHub.
 
-Para importar o arquivo SQL disponibilizado no repositório:
+### 3. Construir e iniciar os contêineres
 
-1. Abra o MySQL Workbench.
-2. Acesse **Server → Data Import**.
-3. Selecione **Import from Self-Contained File**.
-4. Escolha o arquivo SQL correspondente ao banco operacional.
-5. Verifique o schema de destino.
-6. Clique em **Start Import**.
+No terminal, execute:
 
-Se o banco já estiver criado e configurado, não será necessário importá-lo novamente.
-
-**Atenção:** utilize um script compatível com a estrutura exigida pelo backend. O arquivo de demonstração `banco_sistema_exemplo_limpo.sql` é opcional e deve ser conferido antes de ser utilizado para testar todas as operações de cadastro.
-
-### 4. Configurar a conexão MySQL
-
-Na pasta `.streamlit`, faça uma cópia do arquivo:
-
-`secrets.toml.example`
-
-Renomeie a cópia para:
-
-`secrets.toml`
-
-Configure as informações da conexão:
-
-```toml
-MYSQL_HOST = "127.0.0.1"
-MYSQL_PORT = 3306
-MYSQL_USER = "root"
-MYSQL_PASSWORD = "SUA_SENHA"
-MYSQL_DATABASE = "projeto_banco_de_dados"
+```bash
+docker compose up -d --build
 ```
 
-Substitua os valores de exemplo pelas informações do seu MySQL.
+Esse comando constrói a imagem da aplicação, cria os contêineres necessários e inicia os serviços em segundo plano.
 
-O usuário configurado precisa possuir as permissões necessárias para realizar as operações de cadastro, consulta, atualização e exclusão.
+### 4. Verificar os serviços
 
-**Importante:** o arquivo `secrets.toml` contém credenciais privadas e não deve ser publicado no GitHub. Recomenda-se utilizar um usuário MySQL específico para a aplicação.
-
-### 5. Executar a aplicação
-
-No terminal do VS Code, execute:
-
-```powershell
-py -m streamlit run app.py --server.port 8503
+```bash
+docker compose ps
 ```
 
-Acesse:
+Os serviços esperados são:
 
-http://localhost:8503
+| Serviço | Descrição |
+|---|---|
+| `app` | Aplicação Streamlit |
+| `db` | Banco de dados MySQL |
 
-## Integração entre frontend e backend
+O serviço MySQL deve apresentar o estado `healthy`.
 
-O sistema utiliza uma arquitetura integrada entre a interface web e o banco de dados relacional.
+### 5. Inicializar o banco de dados
 
-- **Frontend:** desenvolvido com Streamlit, responsável pelos formulários, filtros, gráficos e visualizações.
-- **Backend:** implementado em Python, responsável pela execução das consultas e operações SQL.
-- **Banco de dados:** MySQL, responsável pelo armazenamento e pelos relacionamentos entre os registros.
+Na primeira execução, é necessário garantir que as tabelas e os dados utilizados pelo dashboard estejam presentes no MySQL.
 
-As informações apresentadas no dashboard são consultadas diretamente no MySQL, permitindo acompanhar os dados cadastrados no sistema.
+O projeto possui o script:
 
-## Indicadores de desempenho
+```text
+sql/projeto_banco_de_dados.sql
+```
 
-Entre os indicadores apresentados estão:
+Caso o banco ainda não tenha sido inicializado, copie o script para o contêiner:
 
-- Quantidade de empresas e projetos cadastrados.
-- Total de tarefas e sprints.
-- Distribuição das tarefas por estado.
-- Taxa de conclusão das atividades.
-- Volume de tarefas por projeto.
-- Conclusão das tarefas por sprint.
-- Distribuição de projetos por empresa.
-- Quantidade de membros por empresa.
+```bash
+docker compose cp ./sql/projeto_banco_de_dados.sql db:/tmp/projeto_banco_de_dados.sql
+```
 
-A taxa de conclusão considera a proporção de tarefas com estado `concluida` em relação ao total de tarefas do recorte analisado.
+Em seguida, acesse o MySQL:
 
-Os indicadores refletem os registros disponíveis no banco de dados conectado.
+```bash
+docker compose exec db mysql -u root -p
+```
 
-## Observações
+Informe a senha do administrador e execute:
 
-O sistema foi desenvolvido para fins acadêmicos, como parte do projeto **EJFlow — Gerenciador de Projetos para Empresas Juniores**.
+```sql
+USE projeto_banco_de_dados;
+SOURCE /tmp/projeto_banco_de_dados.sql;
+SHOW TABLES;
+```
 
-Para utilização em ambientes de produção, são recomendados aprimoramentos relacionados à autenticação, ao controle de acesso e à segurança das operações.
+**Atenção:** importe o script somente quando necessário. Antes de executá-lo novamente, verifique se existem dados importantes, pois o comportamento depende das instruções SQL presentes no arquivo.
 
-## Projeto acadêmico
+Na configuração testada, foram identificadas sete tabelas:
 
-**Universidade Federal do Rio Grande do Norte (UFRN)**
+- `TAREFAS`
+- `clientes`
+- `demanda`
+- `empresas`
+- `membros`
+- `projetos`
+- `sprints`
 
-Disciplina de Banco de Dados — 2026.2
+### 6. Acessar o dashboard
+
+Após a inicialização dos serviços, abra o navegador e acesse:
+
+**http://localhost:8503**
+
+O dashboard estará disponível enquanto os contêineres estiverem em execução.
+
+## 💻 Comandos úteis
+
+| Comando | Descrição |
+|---|---|
+| `docker compose up -d` | Inicia os contêineres |
+| `docker compose up -d --build` | Reconstrói e inicia a aplicação |
+| `docker compose ps` | Verifica o estado dos serviços |
+| `docker compose logs -f app` | Exibe os logs da aplicação |
+| `docker compose logs -f db` | Exibe os logs do MySQL |
+| `docker compose stop` | Interrompe os serviços |
+| `docker compose down` | Remove os contêineres e a rede criada pelo Compose |
+
+**Observação:** o comando `docker compose down` preserva os volumes nomeados por padrão. Evite utilizar `docker compose down -v` quando desejar manter os dados armazenados no MySQL.
+
+## 💾 Persistência dos dados
+
+O MySQL utiliza um volume Docker chamado `mysql_data`, responsável por armazenar os arquivos do banco de dados.
+
+Dessa forma, os dados permanecem disponíveis mesmo após a interrupção ou recriação dos contêineres, desde que o volume não seja removido.
+
+## 🔐 Segurança
+
+O projeto utiliza variáveis de ambiente para configurar a conexão com o banco de dados.
+
+Recomendações:
+
+- Não publicar senhas ou credenciais no repositório.
+- Adicionar `.env` ao `.gitignore`.
+- Não versionar `.streamlit/secrets.toml` contendo informações sensíveis.
+- Utilizar um usuário específico da aplicação em vez do usuário `root`.
+- Manter senhas distintas para o administrador do MySQL e o usuário da aplicação.
+
+## 📁 Estrutura principal do projeto
+
+```text
+dashboard_EJFlow/
+│
+├── app.py
+├── data_access.py
+├── requirements.txt
+├── Dockerfile
+├── compose.yaml
+├── .dockerignore
+├── .gitignore
+├── README.md
+│
+└── sql/
+    └── projeto_banco_de_dados.sql
+```
+
+Arquivos recomendados para configuração local:
+
+- `.env`: contém as credenciais reais e não deve ser versionado.
+- `.env.example`: pode ser adicionado ao repositório com valores fictícios para facilitar a configuração por outros usuários.
+
+## ✅ Validação da conteinerização
+
+A execução local foi testada com Docker Compose.
+
+Foram verificados:
+
+- Construção bem-sucedida da imagem Docker.
+- Inicialização dos contêineres Streamlit e MySQL.
+- Estado saudável do serviço MySQL.
+- Existência das sete tabelas no banco de dados.
+- Acesso à aplicação pela porta `8503`.
+- Exibição dos gráficos e informações do dashboard.
+- Funcionamento das operações de cadastro e exclusão de empresas.
+
+Esses testes confirmaram o funcionamento da aplicação conteinerizada no ambiente local utilizado.
+
+## 📌 Considerações finais
+
+A conteinerização do Dashboard EJFlow permite executar a aplicação Streamlit e o banco de dados MySQL de maneira integrada, utilizando o Docker Compose para gerenciar os serviços.
+
+Essa abordagem reduz a necessidade de configurações manuais no ambiente de desenvolvimento, facilita a reprodução da aplicação e estabelece uma base para futuras melhorias e implantação em outros ambientes.
+
+---
+
+**Projeto:** Dashboard EJFlow  
+**Tecnologias principais:** Python, Streamlit, MySQL e Docker  
+**Ambiente validado:** Execução local com Docker Compose
