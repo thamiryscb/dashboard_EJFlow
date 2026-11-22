@@ -4,6 +4,11 @@ import os
 import re
 import pandas as pd
 
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI()
+
 TABLES = ('empresas', 'clientes', 'projetos', 'membros', 'demanda', 'sprints', 'tarefas')
 REQUIRED = {
     'empresas': {'id', 'nome', 'rep'},
@@ -38,7 +43,6 @@ def validate_name(name):
     if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
         raise ValueError('O nome do schema contém caracteres não permitidos.')
     return '`' + name + '`'
-
 
 def fetch_all(config):
     import mysql.connector
@@ -186,24 +190,9 @@ def data_quality(d):
         checks.append(('Demandas fora da empresa cadastrada para o cliente', int(conflicts.sum())))
     return checks
 
-
-
-
-
-
-
-
 #====================================
 #Funções de inserção e ativação
 #===================================
-
-
-
-
-
-
-
-
 
 def execute_command(config, query, params=None):
     """Executa comandos INSERT, UPDATE e DELETE"""
@@ -231,7 +220,7 @@ def execute_command(config, query, params=None):
 # ==========================================
 # FUNÇÕES DE INSERÇÃO E ATUALIZAÇÃO
 # ==========================================
-
+@app.post('/')
 def inserir_nova_empresa(config, id_empresa, nome, rep):
     query = "INSERT INTO empresas (id, nome, rep) VALUES (%s, %s, %s);"
     return execute_command(config, query, (id_empresa, nome, rep))
@@ -314,7 +303,6 @@ def deletar_tarefa(config, id_tarefa):
 #===================================
 #Desvincular
 #===================================
-
 
 def desvincular_projeto_cliente(config, id_projeto, id_cliente): #WIp
     """Remove a associação entre um projeto e um cliente na tabela 'demanda'[cite: 2]."""
