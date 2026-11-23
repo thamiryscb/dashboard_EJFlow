@@ -279,7 +279,6 @@ def vincular_projeto_cliente(config, id_projeto, id_cliente):
 # ==========================================
 # FUNÇÕES DE DELEÇÃO
 # ==========================================
-
 def deletar_empresa(config, id_empresa):
     return execute_command(config, "DELETE FROM empresas WHERE id = %s;", (id_empresa,))
 
