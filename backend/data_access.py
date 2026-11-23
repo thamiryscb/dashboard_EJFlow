@@ -1,13 +1,9 @@
-"""Somente leitura: tabelas e colunas oriundas do SQL do projeto."""
+"""Camada de acesso a dados (leitura, análise e escrita) para as tabelas MySQL do EJFlow."""
 from __future__ import annotations
+
 import os
 import re
 import pandas as pd
-
-from fastapi import FastAPI
-from pydantic import BaseModel
-
-app = FastAPI()
 
 TABLES = ('empresas', 'clientes', 'projetos', 'membros', 'demanda', 'sprints', 'tarefas')
 REQUIRED = {
@@ -20,6 +16,8 @@ REQUIRED = {
     'tarefas': {'id', 'id_projeto', 'id_sprint', 'estado', 'descricao', 'data_cria', 'data_fin'},
 }
 
+_TABLE_NAME_CACHE: dict[tuple[str, str], str] = {}
+
 
 def settings():
     """Variáveis de ambiente ou secrets.toml; nunca imprimir a senha."""
@@ -28,14 +26,18 @@ def settings():
         secrets = dict(st.secrets)
     except Exception:
         secrets = {}
+
     def read(key, default=''):
-        return os.getenv(key) or secrets.get(key, default)
+        if os.getenv(key) == None:
+            return default
+        return os.getenv(key) 
+
     return {
-        'host': read('MYSQL_HOST', '127.0.0.1'),
+        'host': read('MYSQL_HOST', '172.18.0.1'),
         'port': int(read('MYSQL_PORT', 3306)),
         'user': read('MYSQL_USER', 'root'),
-        'password': read('MYSQL_PASSWORD', ''),
-        'database': read('MYSQL_DATABASE', 'banco_sistema_demo'),
+        'password': read('MYSQL_PASSWORD', 'sua_senha_secreta'),
+        'database': read('MYSQL_DATABASE', 'meu_banco'),
     }
 
 
@@ -44,14 +46,49 @@ def validate_name(name):
         raise ValueError('O nome do schema contém caracteres não permitidos.')
     return '`' + name + '`'
 
-def fetch_all(config):
+
+def _open_connection(config):
+    """Abre conexão MySQL a partir de um dict de configuração ou de um pool de conexões."""
+    if hasattr(config, 'get_connection'):
+        connection = config.get_connection()
+        database = connection.database
+        return connection, database
     import mysql.connector
-    db = validate_name(config['database'])
     connection = mysql.connector.connect(
-        host=config['host'], port=config['port'], user=config['user'],
-        password=config['password'], database=config['database'], connection_timeout=8,
+        host=config['host'],
+        port=config['port'],
+        user=config['user'],
+        password=config['password'],
+        database=config['database'],
+        connection_timeout=8,
         use_pure=True,
     )
+    return connection, config['database']
+
+
+def _resolve_table(cursor, database, table):
+    """Resolve o nome físico da tabela no schema (ex.: 'TAREFAS' vs 'tarefas')."""
+    cache_key = (database, table.lower())
+    if cache_key in _TABLE_NAME_CACHE:
+        return validate_name(_TABLE_NAME_CACHE[cache_key])
+    cursor.execute(
+        'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES '
+        'WHERE TABLE_SCHEMA = %s AND LOWER(TABLE_NAME) = %s',
+        (database, table.lower()),
+    )
+    rows = cursor.fetchall()
+    names = {r['TABLE_NAME'] if isinstance(r, dict) else r[0] for r in rows}
+    if len(names) > 1 and table not in names:
+        raise RuntimeError(f"Nome ambíguo para a tabela '{table}'.")
+    physical = table if table in names else next(iter(names), table)
+    if names:
+        _TABLE_NAME_CACHE[cache_key] = physical
+    return validate_name(physical)
+
+
+def fetch_all(config):
+    connection, database = _open_connection(config)
+    db = validate_name(database)
     try:
         cursor = connection.cursor(dictionary=True)
         try:
@@ -60,9 +97,11 @@ def fetch_all(config):
             result = {}
             columns = {}
             for table in TABLES:
-                cursor.execute('SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS '
-                               'WHERE TABLE_SCHEMA = %s AND LOWER(TABLE_NAME) = %s',
-                               (config['database'], table.lower()))
+                cursor.execute(
+                    'SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS '
+                    'WHERE TABLE_SCHEMA = %s AND LOWER(TABLE_NAME) = %s',
+                    (database, table.lower()),
+                )
                 metadata = cursor.fetchall()
                 physical_names = {r['TABLE_NAME'] for r in metadata}
                 physical_name = table if table in physical_names else next(iter(physical_names), table)
@@ -82,23 +121,41 @@ def fetch_all(config):
         connection.close()
 
 
+def fetch_query(config, query, params=None, fetchone=False, table=None):
+    """Executa uma consulta SELECT retornando dict (fetchone=True) ou list[dict]."""
+    connection, database = _open_connection(config)
+    validate_name(database)
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            sql = query.format(table=_resolve_table(cursor, database, table)) if table else query
+            cursor.execute(sql, params or ())
+            return cursor.fetchone() if fetchone else cursor.fetchall()
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def normalize(raw):
     """Preserva a cardinalidade original e cria chaves auxiliares para filtros."""
-    d = {k: v.copy() for k,v in raw.items()}
+    d = {k: v.copy() for k, v in raw.items()}
     for name in ('empresas', 'clientes', 'projetos', 'membros', 'sprints', 'tarefas'):
         if 'id' in d[name]:
             d[name]['id'] = pd.to_numeric(d[name]['id'], errors='coerce').astype('Int64')
-    for name, col in [('projetos','id_empresa'),('membros','id_empresa'),('clientes','id_empresa'),
-                      ('sprints','id_projeto'),('tarefas','id_projeto'),('tarefas','id_sprint'),
-                      ('demanda','id_projeto'),('demanda','id_cliente')]:
+    for name, col in [
+        ('projetos', 'id_empresa'), ('membros', 'id_empresa'), ('clientes', 'id_empresa'),
+        ('sprints', 'id_projeto'), ('tarefas', 'id_projeto'), ('tarefas', 'id_sprint'),
+        ('demanda', 'id_projeto'), ('demanda', 'id_cliente'),
+    ]:
         if col in d[name]:
             d[name][col] = pd.to_numeric(d[name][col], errors='coerce').astype('Int64')
     for name in ('tarefas', 'sprints'):
-        for col in (('data_cria','data_fin') if name == 'tarefas' else ('data_in','data_fin')):
+        for col in (('data_cria', 'data_fin') if name == 'tarefas' else ('data_in', 'data_fin')):
             d[name][col] = pd.to_datetime(d[name][col], errors='coerce')
     if 'isDone' in d['sprints']:
         d['sprints']['isDone'] = pd.to_numeric(d['sprints']['isDone'], errors='coerce')
-    for c in ('nome','rep'):
+    for c in ('nome', 'rep'):
         d['empresas'][c] = d['empresas'][c].fillna('').astype(str)
     for name in ('projetos', 'clientes', 'membros'):
         d[name]['nome'] = d[name]['nome'].fillna('').astype(str)
@@ -125,26 +182,38 @@ def make_analytics(d, company_ids=None, project_ids=None, task_status=None):
     demands = d['demanda'][d['demanda']['id_projeto'].isin(p_ids)].drop_duplicates().copy()
     clients = d['clientes'][d['clientes']['id'].isin(demands['id_cliente'])].copy()
     totals = tasks.groupby('id_projeto', dropna=False).agg(
-        total_tarefas=('id','count'),
-        concluidas=('estado',lambda x: int((x == 'concluida').sum())),
-        em_andamento=('estado',lambda x: int((x == 'em_andamento').sum())),
-        nao_iniciadas=('estado',lambda x: int((x == 'nao_iniciada').sum())),
+        total_tarefas=('id', 'count'),
+        concluidas=('estado', lambda x: int((x == 'concluida').sum())),
+        em_andamento=('estado', lambda x: int((x == 'em_andamento').sum())),
+        nao_iniciadas=('estado', lambda x: int((x == 'nao_iniciada').sum())),
     ).reset_index()
     sprint_stats = sprints.groupby('id_projeto', dropna=False).agg(
-        total_sprints=('id','count'), sprints_concluidas=('isDone', lambda x: int((x == 1).sum()))
+        total_sprints=('id', 'count'),
+        sprints_concluidas=('isDone', lambda x: int((x == 1).sum())),
     ).reset_index()
-    client_stats = demands.groupby('id_projeto').agg(clientes=('id_cliente','nunique')).reset_index()
-    summary = projects.merge(d['empresas'][['id','nome']].rename(columns={'id':'id_empresa','nome':'empresa'}),
-                             on='id_empresa', how='left')
+    client_stats = demands.groupby('id_projeto').agg(clientes=('id_cliente', 'nunique')).reset_index()
+    summary = projects.merge(
+        d['empresas'][['id', 'nome']].rename(columns={'id': 'id_empresa', 'nome': 'empresa'}),
+        on='id_empresa',
+        how='left',
+    )
     summary = summary.merge(totals, left_on='id', right_on='id_projeto', how='left').drop(columns=['id_projeto'])
     summary = summary.merge(sprint_stats, left_on='id', right_on='id_projeto', how='left').drop(columns=['id_projeto'])
     summary = summary.merge(client_stats, left_on='id', right_on='id_projeto', how='left').drop(columns=['id_projeto'])
-    for c in ['total_tarefas','concluidas','em_andamento','nao_iniciadas','total_sprints','sprints_concluidas','clientes']:
+    for c in ['total_tarefas', 'concluidas', 'em_andamento', 'nao_iniciadas', 'total_sprints', 'sprints_concluidas', 'clientes']:
         summary[c] = summary[c].fillna(0).astype(int)
     summary['taxa_conclusao'] = 100 * summary['concluidas'].div(summary['total_tarefas'].where(summary['total_tarefas'].gt(0)))
-    return {'projects': projects, 'companies': companies, 'members': members,
-            'sprints': sprints, 'tasks': tasks, 'tasks_all': tasks_all,
-            'demands':demands, 'clients':clients, 'summary':summary}
+    return {
+        'projects': projects,
+        'companies': companies,
+        'members': members,
+        'sprints': sprints,
+        'tasks': tasks,
+        'tasks_all': tasks_all,
+        'demands': demands,
+        'clients': clients,
+        'summary': summary,
+    }
 
 
 def sprint_analytics(sprints, tasks):
@@ -164,8 +233,8 @@ def sprint_analytics(sprints, tasks):
 
 
 def data_quality(d):
-    t, s, p = d['tarefas'],d['sprints'],d['projetos']
-    sprint_map = s[['id','id_projeto']].rename(columns={'id':'id_sprint', 'id_projeto':'sprint_project'})
+    t, s, p = d['tarefas'], d['sprints'], d['projetos']
+    sprint_map = s[['id', 'id_projeto']].rename(columns={'id': 'id_sprint', 'id_projeto': 'sprint_project'})
     check = t[t['id_sprint'].notna()].merge(sprint_map, on='id_sprint', how='left', indicator=True)
     mismatches = int((check['sprint_project'].notna() & (check['id_projeto'] != check['sprint_project'])).sum())
     checks = [
@@ -175,12 +244,12 @@ def data_quality(d):
         ('Tarefas com referência a sprint inexistente', int(check['_merge'].eq('left_only').sum())),
         ('Tarefas com fim anterior à criação', int(t['data_fin'].lt(t['data_cria']).sum())),
         ('Tarefas sem estado reconhecido', int((~t['estado'].isin(['concluida', 'em_andamento', 'nao_iniciada'])).sum())),
-        ('Tarefas concluídas sem data de finalização',int(((t['estado']=='concluida') & t['data_fin'].isna()).sum())),
-        ('Tarefas não concluídas com data de finalização',int(((t['estado']!='concluida') & t['data_fin'].notna()).sum())),
-        ('Sprints sem data inicial ou final',int((s['data_in'].isna() | s['data_fin'].isna()).sum())),
-        ('Sprints com fim anterior ao início',int(((s['data_fin'] < s['data_in']) & s['data_fin'].notna() & s['data_in'].notna()).sum())),
-        ('Projetos sem tarefas cadastradas',int((~p['id'].isin(t['id_projeto'])).sum())),
-        ('Clientes sem demanda associada',int((~d['clientes']['id'].isin(d['demanda']['id_cliente'])).sum())),
+        ('Tarefas concluídas sem data de finalização', int(((t['estado'] == 'concluida') & t['data_fin'].isna()).sum())),
+        ('Tarefas não concluídas com data de finalização', int(((t['estado'] != 'concluida') & t['data_fin'].notna()).sum())),
+        ('Sprints sem data inicial ou final', int((s['data_in'].isna() | s['data_fin'].isna()).sum())),
+        ('Sprints com fim anterior ao início', int(((s['data_fin'] < s['data_in']) & s['data_fin'].notna() & s['data_in'].notna()).sum())),
+        ('Projetos sem tarefas cadastradas', int((~p['id'].isin(t['id_projeto'])).sum())),
+        ('Clientes sem demanda associada', int((~d['clientes']['id'].isin(d['demanda']['id_cliente'])).sum())),
     ]
     if 'id_empresa' in d['clientes']:
         contracts = d['clientes'].set_index('id')['id_empresa']
@@ -190,120 +259,206 @@ def data_quality(d):
         checks.append(('Demandas fora da empresa cadastrada para o cliente', int(conflicts.sum())))
     return checks
 
-#====================================
-#Funções de inserção e ativação
-#===================================
 
-def execute_command(config, query, params=None):
-    """Executa comandos INSERT, UPDATE e DELETE"""
-    import mysql.connector
-    db = validate_name(config['database'])
-    connection = mysql.connector.connect(
-        host=config['host'], port=config['port'], user=config['user'],
-        password=config['password'], database=config['database'], connection_timeout=8,
-        use_pure=True,
-    )
+# ==========================================
+# FUNÇÕES DE LEITURA POR ENTIDADE
+# ==========================================
+
+def listar_empresas(config):
+    return fetch_query(config, 'SELECT * FROM {table} ORDER BY id;', table='empresas')
+
+
+def obter_empresa(config, id_empresa):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_empresa,), fetchone=True, table='empresas')
+
+
+def listar_clientes(config):
+    return fetch_query(config, 'SELECT * FROM {table} ORDER BY id;', table='clientes')
+
+
+def obter_cliente(config, id_cliente):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_cliente,), fetchone=True, table='clientes')
+
+
+def listar_membros(config, id_empresa=None):
+    if id_empresa is not None:
+        return fetch_query(config, 'SELECT * FROM {table} WHERE id_empresa = %s ORDER BY id;', (id_empresa,), table='membros')
+    return fetch_query(config, 'SELECT * FROM {table} ORDER BY id;', table='membros')
+
+
+def obter_membro(config, id_membro):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_membro,), fetchone=True, table='membros')
+
+
+def listar_projetos(config, id_empresa=None):
+    if id_empresa is not None:
+        return fetch_query(config, 'SELECT * FROM {table} WHERE id_empresa = %s ORDER BY id;', (id_empresa,), table='projetos')
+    return fetch_query(config, 'SELECT * FROM {table} ORDER BY id;', table='projetos')
+
+
+def obter_projeto(config, id_projeto):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_projeto,), fetchone=True, table='projetos')
+
+
+def listar_demandas(config, id_projeto=None, id_cliente=None):
+    clauses = []
+    params = []
+    if id_projeto is not None:
+        clauses.append('id_projeto = %s')
+        params.append(id_projeto)
+    if id_cliente is not None:
+        clauses.append('id_cliente = %s')
+        params.append(id_cliente)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return fetch_query(config, f'SELECT * FROM {{table}}{where} ORDER BY id_projeto, id_cliente;', tuple(params), table='demanda')
+
+
+def listar_sprints(config, id_projeto=None):
+    if id_projeto is not None:
+        return fetch_query(config, 'SELECT * FROM {table} WHERE id_projeto = %s ORDER BY id;', (id_projeto,), table='sprints')
+    return fetch_query(config, 'SELECT * FROM {table} ORDER BY id;', table='sprints')
+
+
+def obter_sprint(config, id_sprint):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_sprint,), fetchone=True, table='sprints')
+
+
+def listar_tarefas(config, id_projeto=None, id_sprint=None, estado=None):
+    clauses = []
+    params = []
+    if id_projeto is not None:
+        clauses.append('id_projeto = %s')
+        params.append(id_projeto)
+    if id_sprint is not None:
+        clauses.append('id_sprint = %s')
+        params.append(id_sprint)
+    if estado is not None:
+        clauses.append('estado = %s')
+        params.append(estado)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return fetch_query(config, f'SELECT * FROM {{table}}{where} ORDER BY id;', tuple(params), table='tarefas')
+
+
+def obter_tarefa(config, id_tarefa):
+    return fetch_query(config, 'SELECT * FROM {table} WHERE id = %s;', (id_tarefa,), fetchone=True, table='tarefas')
+
+
+# ==========================================
+# EXECUÇÃO DE COMANDOS DE ESCRITA
+# ==========================================
+
+def execute_command(config, query, params=None, table=None):
+    """Executa comandos INSERT, UPDATE e DELETE."""
+    connection, database = _open_connection(config)
+    validate_name(database)
     try:
         cursor = connection.cursor()
         try:
-            cursor.execute(query, params or ())
+            sql = query.format(table=_resolve_table(cursor, database, table)) if table else query
+            cursor.execute(sql, params or ())
             connection.commit()
             return True
-
         except Exception as e:
-            return print("Erro")
+            connection.rollback()
+            print(f'Erro: {e}')
+            return False
         finally:
             cursor.close()
     finally:
         connection.close()
 
+
 # ==========================================
-# FUNÇÕES DE INSERÇÃO E ATUALIZAÇÃO
+# FUNÇÕES DE INSERÇÃO
 # ==========================================
-@app.post('/')
+
 def inserir_nova_empresa(config, id_empresa, nome, rep):
-    query = "INSERT INTO empresas (id, nome, rep) VALUES (%s, %s, %s);"
-    return execute_command(config, query, (id_empresa, nome, rep))
+    query = 'INSERT INTO {table} (id, nome, rep) VALUES (%s, %s, %s);'
+    return execute_command(config, query, (id_empresa, nome, rep), table='empresas')
+
 
 def inserir_novo_membro(config, id_membro, id_empresa, nome, email, cargo):
-    query = "INSERT INTO membros (id, id_empresa, nome, email, cargo) VALUES (%s, %s, %s, %s, %s);"
-    return execute_command(config, query, (id_membro, id_empresa, nome, email, cargo))
+    query = 'INSERT INTO {table} (id, id_empresa, nome, email, cargo) VALUES (%s, %s, %s, %s, %s);'
+    return execute_command(config, query, (id_membro, id_empresa, nome, email, cargo), table='membros')
+
 
 def inserir_novo_cliente(config, nome, email, id_empresa):
-    query = "INSERT INTO clientes (nome, email, id_empresa) VALUES (%s, %s, %s);"
-    return execute_command(config, query, (nome, email, id_empresa))
+    query = 'INSERT INTO {table} (nome, email, id_empresa) VALUES (%s, %s, %s);'
+    return execute_command(config, query, (nome, email, id_empresa), table='clientes')
+
 
 def inserir_novo_projeto(config, id_projeto, id_empresa, nome, descricao, id_cliente=None):
-    query_projeto = "INSERT INTO projetos (id, id_empresa, nome, descricao) VALUES (%s, %s, %s, %s);"
-    sucesso = execute_command(config, query_projeto, (id_projeto, id_empresa, nome, descricao))
-    if sucesso and id_cliente:
-        query_demanda = "INSERT INTO demanda (id_projeto, id_cliente) VALUES (%s, %s);"
-        execute_command(config, query_demanda, (id_projeto, id_cliente))
+    query_projeto = 'INSERT INTO {table} (id, id_empresa, nome, descricao) VALUES (%s, %s, %s, %s);'
+    sucesso = execute_command(config, query_projeto, (id_projeto, id_empresa, nome, descricao), table='projetos')
+    if sucesso and id_cliente is not None:
+        query_demanda = 'INSERT INTO {table} (id_projeto, id_cliente) VALUES (%s, %s);'
+        return execute_command(config, query_demanda, (id_projeto, id_cliente), table='demanda')
     return sucesso
 
+
 def inserir_nova_sprint(config, id_projeto, is_done, data_in, data_fin):
-    query = "INSERT INTO sprints (id_projeto, isDone, data_in, data_fin) VALUES (%s, %s, %s, %s);"
-    return execute_command(config, query, (id_projeto, is_done, data_in, data_fin))
+    query = 'INSERT INTO {table} (id_projeto, isDone, data_in, data_fin) VALUES (%s, %s, %s, %s);'
+    return execute_command(config, query, (id_projeto, is_done, data_in, data_fin), table='sprints')
+
 
 def inserir_nova_tarefa(config, id_projeto, descricao, estado='nao_iniciada', id_sprint=None, data_cria=None, data_fin=None):
-    query = """
-        INSERT INTO tarefas (id_projeto, id_sprint, estado, descricao, data_cria, data_fin) 
-        VALUES (%s, %s, %s, %s, %s, %s);
-    """
-    return execute_command(config, query, (id_projeto, id_sprint, estado, descricao, data_cria, data_fin))
+    query = (
+        'INSERT INTO {table} (id_projeto, id_sprint, estado, descricao, data_cria, data_fin) '
+        'VALUES (%s, %s, %s, %s, %s, %s);'
+    )
+    return execute_command(config, query, (id_projeto, id_sprint, estado, descricao, data_cria, data_fin), table='tarefas')
 
 
-#=================================
-#Funções de atualizção
-#=================================
-
+# ==========================================
+# FUNÇÕES DE ATUALIZAÇÃO E VÍNCULO
+# ==========================================
 
 def atualizar_estado_tarefa(config, id_tarefa, novo_estado):
-    query = "UPDATE tarefas SET estado = %s WHERE id = %s;"
-    return execute_command(config, query, (novo_estado, id_tarefa))
+    query = 'UPDATE {table} SET estado = %s WHERE id = %s;'
+    return execute_command(config, query, (novo_estado, id_tarefa), table='tarefas')
+
 
 def associar_tarefa_a_sprint(config, id_tarefa, id_sprint):
-    """Vincula uarefa existente a uma sprint existente[cite: 2]."""
-    query = "UPDATE tarefas SET id_sprint = %s WHERE id = %s;"
-    return execute_command(config, query, (id_sprint, id_tarefa))
+    """Vincula uma tarefa existente a uma sprint existente."""
+    query = 'UPDATE {table} SET id_sprint = %s WHERE id = %s;'
+    return execute_command(config, query, (id_sprint, id_tarefa), table='tarefas')
 
 
 def vincular_projeto_cliente(config, id_projeto, id_cliente):
-    """Associa um projeto existente a um cliente na tabela demanda[cite: 2]."""
-    query = "INSERT INTO demanda (id_projeto, id_cliente) VALUES (%s, %s);"
-    return execute_command(config, query, (id_projeto, id_cliente))
-
-
+    """Associa um projeto existente a um cliente na tabela demanda."""
+    query = 'INSERT INTO {table} (id_projeto, id_cliente) VALUES (%s, %s);'
+    return execute_command(config, query, (id_projeto, id_cliente), table='demanda')
 
 
 # ==========================================
-# FUNÇÕES DE DELEÇÃO
+# FUNÇÕES DE DELEÇÃO E DESVINCULAÇÃO
 # ==========================================
+
 def deletar_empresa(config, id_empresa):
-    return execute_command(config, "DELETE FROM empresas WHERE id = %s;", (id_empresa,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_empresa,), table='empresas')
+
 
 def deletar_cliente(config, id_cliente):
-    return execute_command(config, "DELETE FROM clientes WHERE id = %s;", (id_cliente,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_cliente,), table='clientes')
+
 
 def deletar_membro(config, id_membro):
-    return execute_command(config, "DELETE FROM membros WHERE id = %s;", (id_membro,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_membro,), table='membros')
+
 
 def deletar_projeto(config, id_projeto):
-    return execute_command(config, "DELETE FROM projetos WHERE id = %s;", (id_projeto,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_projeto,), table='projetos')
+
 
 def deletar_sprint(config, id_sprint):
-    return execute_command(config, "DELETE FROM sprints WHERE id = %s;", (id_sprint,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_sprint,), table='sprints')
+
 
 def deletar_tarefa(config, id_tarefa):
-    return execute_command(config, "DELETE FROM tarefas WHERE id = %s;", (id_tarefa,))
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_tarefa,), table='tarefas')
 
 
-
-#===================================
-#Desvincular
-#===================================
-
-def desvincular_projeto_cliente(config, id_projeto, id_cliente): #WIp
-    """Remove a associação entre um projeto e um cliente na tabela 'demanda'[cite: 2]."""
-    query = "DELETE FROM demanda WHERE id_projeto = %s AND id_cliente = %s;"
-    return execute_command(config, query, (id_projeto, id_cliente))
+def desvincular_projeto_cliente(config, id_projeto, id_cliente):
+    """Remove a associação entre um projeto e um cliente na tabela demanda."""
+    query = 'DELETE FROM {table} WHERE id_projeto = %s AND id_cliente = %s;'
+    return execute_command(config, query, (id_projeto, id_cliente), table='demanda')
