@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime
+import os
 from typing import Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
 from mysql.connector import Error, pooling
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
 
@@ -210,6 +212,25 @@ app = FastAPI(
     version='1.0.0',
     lifespan=lifespan,
 )
+
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv('CORS_ORIGINS', 'http://localhost:8503,http://127.0.0.1:8503').split(',')
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allow_headers=['*'],
+)
+
+
+@app.get('/health', tags=['Sistema'], summary='Verificação de saúde da API.')
+def healthcheck():
+    return {'status': 'ok'}
 
 
 # ---------------------------------------------------------------------------
