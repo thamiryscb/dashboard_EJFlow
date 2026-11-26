@@ -17,7 +17,7 @@ from data_access import (
     inserir_nova_sprint, inserir_nova_tarefa, atualizar_estado_tarefa,
     associar_tarefa_a_sprint, vincular_projeto_cliente, desvincular_projeto_cliente,
     deletar_empresa, deletar_cliente, deletar_membro, deletar_projeto, deletar_sprint, deletar_tarefa,
-    autenticar_usuario
+    autenticar_usuario, definir_senha_usuario, remover_senha_usuario, Criptografar_Em_Hash
 )
 
 st.set_page_config(page_title='EJFlow | Observatório de Projetos', page_icon='◆', layout='wide', initial_sidebar_state='expanded')
@@ -417,10 +417,11 @@ if '📋 Tabelas do Dataset' in pages:
             
         with tab_cli:
             st.subheader('Tabela: Clientes')
-            st.dataframe(all_data['clientes'], use_container_width=True, hide_index=True)
+            #st.dataframe(all_data['clientes'], use_container_width=True, hide_index=True)
+            st.dataframe(all_data['clientes'].drop(columns=['senha'], errors='ignore'), use_container_width=True, hide_index=True)#para ignorar a senha
             st.caption(f"Total de registros: {len(all_data['clientes'])}")
-            st.dataframe(all_data['clientes'].drop(columns=['senha'], errors='ignore'), use_container_width=True, hide_index=True)
-            #para ignorar a senha
+
+            
 
         with tab_proj:
             st.subheader('Tabela: Projetos')
@@ -429,10 +430,11 @@ if '📋 Tabelas do Dataset' in pages:
             
         with tab_memb:
             st.subheader('Tabela: Membros')
-            st.dataframe(all_data['membros'], use_container_width=True, hide_index=True)
+            #st.dataframe(all_data['membros'], use_container_width=True, hide_index=True)
+            st.dataframe(all_data['membros'].drop(columns=['senha'], errors='ignore'), use_container_width=True, hide_index=True)#para ignorar a colluna de senha ja que n é bom todo mundo ver a senha de todo mundo
             st.caption(f"Total de registros: {len(all_data['membros'])}")
-            st.dataframe(all_data['membros'].drop(columns=['senha'], errors='ignore'), use_container_width=True, hide_index=True)
-            #para ignorar a colluna de senha ja que n é bom todo mundo ver a senha de todo mundo
+            
+            
             
         with tab_dem:
             st.subheader('Tabela: Demanda (Projeto ↔ Cliente)')
@@ -495,7 +497,7 @@ if '⚙  Gerenciamento' in pages and usuario and usuario['tipo'] == 'membro':
         with tab_create:
             acao_escolhida = st.selectbox(
                 'Selecione a operação', 
-                ['Inserir Novo Registro', 'Atualizar Estado de Tarefa', 'Associar Tarefa a Sprint', 'Vincular Projeto a Cliente']
+                ['Inserir Novo Registro', 'Atualizar Estado de Tarefa', 'Associar Tarefa a Sprint', 'Vincular Projeto a Cliente', 'Definir / Alterar Senha de Usuário']
             )
 
             if acao_escolhida == 'Inserir Novo Registro':
@@ -694,11 +696,53 @@ if '⚙  Gerenciamento' in pages and usuario and usuario['tipo'] == 'membro':
                         else:
                             st.error('Erro ao vincular projeto e cliente (o vínculo já pode existir).')
 
+            elif acao_escolhida == 'Definir / Alterar Senha de Usuário':
+                tipo_usr = st.radio('Tipo de conta', ['Membro', 'Cliente'], horizontal=True)
+
+                with st.form('form_definir_senha'):
+                    if tipo_usr == 'Membro':
+                        df_usr = all_data['membros']
+                        usr_id = st.selectbox(
+                            'Selecione o Membro',
+                            options=df_usr['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{df_usr.loc[df_usr['id']==x, 'nome'].values[0]} "
+                                f"({df_usr.loc[df_usr['id']==x, 'email'].values[0]})"
+                            )
+                        )
+                    else:
+                        df_usr = all_data['clientes']
+                        usr_id = st.selectbox(
+                            'Selecione o Cliente',
+                            options=df_usr['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{df_usr.loc[df_usr['id']==x, 'nome'].values[0]} "
+                                f"({df_usr.loc[df_usr['id']==x, 'email'].values[0]})"
+                            )
+                        )
+
+                    nova_senha = st.text_input('Nova Senha', type='password')
+                    confirmar_senha = st.text_input('Confirmar Nova Senha', type='password')
+
+                    if st.form_submit_button('Salvar Senha', type='primary'):
+                        if not nova_senha:
+                            st.error('A senha não pode ficar em branco.')
+                        elif nova_senha != confirmar_senha:
+                            st.error('As senhas digitadas não coincidem.')
+                        else:
+                            chave_tipo = 'membro' if tipo_usr == 'Membro' else 'cliente'
+                            if definir_senha_usuario(config, chave_tipo, usr_id, nova_senha):
+                                st.success(f'Senha definida com sucesso para o {tipo_usr.lower()}!')
+                                load_db.clear()
+                                st.rerun()
+                            else:
+                                st.error('Erro ao salvar a senha no banco de dados.')
+
         # --- ABA DE DELEÇÃO E DESVINCULAÇÃO ---
         with tab_delete:
             modo_delecao = st.selectbox(
                 'Selecione a ação de remoção', 
-                ['Excluir Registro de Tabela', 'Desvincular Projeto de Cliente (Tabela Demanda)']
+                ['Excluir Registro de Tabela', 'Desvincular Projeto de Cliente (Tabela Demanda)','Remover Senha de Usuário (Revogar Acesso)']
             )
 
             if modo_delecao == 'Excluir Registro de Tabela':
@@ -799,6 +843,46 @@ if '⚙  Gerenciamento' in pages and usuario and usuario['tipo'] == 'membro':
                                 st.rerun()
                             else:
                                 st.error('Erro ao remover empresa. Verifique se existem registros vinculados.')
+                                
+            elif modo_delecao == 'Remover Senha de Usuário (Revogar Acesso)':
+                st.caption('Remove a senha cadastrada do usuário, impedindo o login sem excluir seu registro.')
+                tipo_usr_del = st.radio('Tipo de conta', ['Membro', 'Cliente'], horizontal=True, key='radio_del_senha')
+
+                with st.form('form_remover_senha'):
+                    if tipo_usr_del == 'Membro':
+                        df_usr = all_data['membros']
+                    else:
+                        df_usr = all_data['clientes']
+
+                    # Filtra apenas usuários que possuem senha cadastrada (caso a coluna 'senha' exista no dataframe)
+                    if 'senha' in df_usr.columns:
+                        df_com_senha = df_usr[df_usr['senha'].fillna('') != '']
+                    else:
+                        df_com_senha = df_usr
+
+                    if df_com_senha.empty:
+                        st.info(f'Nenhum {tipo_usr_del.lower()} possui senha cadastrada no momento.')
+                        st.form_submit_button('Remover Senha', disabled=True)
+                    else:
+                        usr_del_id = st.selectbox(
+                            f'Selecione o {tipo_usr_del}',
+                            options=df_com_senha['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{df_com_senha.loc[df_com_senha['id']==x, 'nome'].values[0]} "
+                                f"({df_com_senha.loc[df_com_senha['id']==x, 'email'].values[0]})"
+                            )
+                        )
+                        if st.form_submit_button('Remover Senha'):
+                            if tipo_usr_del == 'Membro' and usr_del_id == usuario['id']:
+                                st.error('Você não pode remover a senha da sua própria conta enquanto está logado.')
+                            else:
+                                chave_tipo = 'membro' if tipo_usr_del == 'Membro' else 'cliente'
+                                if remover_senha_usuario(config, chave_tipo, usr_del_id):
+                                    st.warning(f'Senha removida! O {tipo_usr_del.lower()} não poderá mais fazer login.')
+                                    load_db.clear()
+                                    st.rerun()
+                                else:
+                                    st.error('Erro ao remover a senha.')
 
             elif modo_delecao == 'Desvincular Projeto de Cliente (Tabela Demanda)':
                 with st.form('form_desvincular_demanda'):

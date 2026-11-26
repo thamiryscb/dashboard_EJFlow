@@ -126,11 +126,11 @@ ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT '';
 
 -- 2. Define a senha apenas para o cliente e o membro de ID 1
 UPDATE clientes
-SET senha = 'Senha'
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
 WHERE id = 1;
 
 UPDATE membros
-SET senha = 'Senha'
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
 WHERE id = 1;
 
 

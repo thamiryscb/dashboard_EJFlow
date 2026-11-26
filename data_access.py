@@ -332,11 +332,12 @@ def desvincular_projeto_cliente(config, id_projeto, id_cliente): #WIp
 # ==========================================
 
 def autenticar_usuario(config, email, senha):
-    """Verifica credenciais nas tabelas 'membros' e 'clientes'.
-    Retorna um dicionário com dados do usuário e 'tipo' ('membro' ou 'cliente'), ou None.
-    """
+    """Verifica credenciais comparando o hash SHA-256 da senha digitada com o banco."""
     if not email or not senha:
         return None
+    
+    senha_hash = Criptografar_Em_Hash(senha)
+    
     import mysql.connector
     connection = mysql.connector.connect(
         host=config['host'], port=config['port'], user=config['user'],
@@ -350,7 +351,7 @@ def autenticar_usuario(config, email, senha):
             cursor.execute(
                 "SELECT id, id_empresa, nome, email, cargo FROM membros "
                 "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
-                (email, senha)
+                (email, senha_hash)
             )
             membro = cursor.fetchone()
             if membro:
@@ -361,7 +362,7 @@ def autenticar_usuario(config, email, senha):
             cursor.execute(
                 "SELECT id, nome, email FROM clientes "
                 "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
-                (email, senha)
+                (email, senha_hash)
             )
             cliente = cursor.fetchone()
             if cliente:
@@ -373,3 +374,32 @@ def autenticar_usuario(config, email, senha):
             cursor.close()
     finally:
         connection.close()
+
+
+
+
+
+#inserção e remoção de senha
+
+def definir_senha_usuario(config, tipo_usuario, id_usuario, nova_senha):
+    """Criptografa a nova senha em SHA-256 e salva na tabela 'membros' ou 'clientes'."""
+    senha_hash = Criptografar_Em_Hash(nova_senha)
+    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
+    query = f"UPDATE {tabela} SET senha = %s WHERE id = %s;"
+    return execute_command(config, query, (senha_hash, id_usuario))
+
+
+def remover_senha_usuario(config, tipo_usuario, id_usuario):
+    """Remove a senha (define como '') revogando o login do 'membro' ou 'cliente'."""
+    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
+    query = f"UPDATE {tabela} SET senha = '' WHERE id = %s;"
+    return execute_command(config, query, (id_usuario,))
+
+
+
+#criptografia em hash
+
+import hashlib as hl
+def Criptografar_Em_Hash(texto):
+    texto = str(texto)
+    return hl.sha256(texto.encode('utf-8')).hexdigest()
