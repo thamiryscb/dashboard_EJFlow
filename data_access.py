@@ -320,3 +320,56 @@ def desvincular_projeto_cliente(config, id_projeto, id_cliente): #WIp
     """Remove a associação entre um projeto e um cliente na tabela 'demanda'[cite: 2]."""
     query = "DELETE FROM demanda WHERE id_projeto = %s AND id_cliente = %s;"
     return execute_command(config, query, (id_projeto, id_cliente))
+
+
+
+
+
+
+
+# ==========================================
+# FUNÇÃO DE AUTENTICAÇÃO
+# ==========================================
+
+def autenticar_usuario(config, email, senha):
+    """Verifica credenciais nas tabelas 'membros' e 'clientes'.
+    Retorna um dicionário com dados do usuário e 'tipo' ('membro' ou 'cliente'), ou None.
+    """
+    if not email or not senha:
+        return None
+    import mysql.connector
+    connection = mysql.connector.connect(
+        host=config['host'], port=config['port'], user=config['user'],
+        password=config['password'], database=config['database'], connection_timeout=8,
+        use_pure=True,
+    )
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            # 1. Verifica se é Membro
+            cursor.execute(
+                "SELECT id, id_empresa, nome, email, cargo FROM membros "
+                "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
+                (email, senha)
+            )
+            membro = cursor.fetchone()
+            if membro:
+                membro['tipo'] = 'membro'
+                return membro
+
+            # 2. Verifica se é Cliente
+            cursor.execute(
+                "SELECT id, nome, email FROM clientes "
+                "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
+                (email, senha)
+            )
+            cliente = cursor.fetchone()
+            if cliente:
+                cliente['tipo'] = 'cliente'
+                return cliente
+
+            return None
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
