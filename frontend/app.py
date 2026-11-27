@@ -44,6 +44,30 @@ st.set_page_config(
 COLORS = {'concluida': '#2DD5A7', 'em_andamento': '#6D8DFF', 'nao_iniciada': '#F6BA64', 'nao_informado': '#94A3B8'}
 PALETTE = ['#698BFF', '#32D5AB', '#F8BA70', '#BA99FF', '#78C8ED', '#FA8E9C', '#98A5C0']
 
+if 'usuario_logado' not in st.session_state:
+    st.session_state['usuario_logado'] = None
+
+
+@st.dialog('Acesso ao Sistema EJFlow')
+def modal_login(api_url: str) -> None:
+    st.caption('Entre com seu e-mail e senha cadastrados no banco de dados.')
+    with st.form('form_login_modal'):
+        email_input = st.text_input('E-mail', placeholder='ex: joao.pedro@techsolutions.com')
+        senha_input = st.text_input('Senha', type='password')
+        submitted = st.form_submit_button('Entrar', type='primary', use_container_width=True)
+        if submitted:
+            ok, user, err = api_request(
+                'POST',
+                api_url,
+                '/auth/login',
+                json_body={'email': email_input.strip(), 'senha': senha_input},
+            )
+            if ok and isinstance(user, dict):
+                st.session_state['usuario_logado'] = user
+                st.rerun()
+            else:
+                st.error(err or 'E-mail ou senha inválidos.')
+
 st.markdown('''<style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
 html,body,[data-testid="stApp"] {font-family:'DM Sans',sans-serif;}
@@ -176,6 +200,8 @@ def _coerce_table_types(table: str, df: pd.DataFrame) -> pd.DataFrame:
     for col in ('nome', 'rep', 'descricao', 'cargo', 'email'):
         if col in frame.columns:
             frame[col] = frame[col].fillna('').astype(str)
+    if 'possui_senha' in frame.columns:
+        frame['possui_senha'] = frame['possui_senha'].fillna(False).astype(bool)
     return frame
 
 
@@ -399,13 +425,34 @@ if projects.empty:
 backlog = tasks[tasks['id_sprint'].isna() & tasks['estado'].ne('concluida')]
 project_names = projects.set_index('id')['nome']
 
-st.markdown(
-    '<div class="hero"><div class="eyebrow">SISTEMAS DE INFORMAÇÃO · BUSINESS INTELLIGENCE</div>'
-    '<h1>Observatório de Projetos <span style="color:#8EAAFF">↗</span></h1>'
-    '<p>Visão gerencial, acadêmica e interativa de projetos, sprints, tarefas, clientes e equipes.</p>'
-    '<span class="pill">● Dados consultados via API FastAPI</span></div>',
-    unsafe_allow_html=True,
-)
+usuario = st.session_state['usuario_logado']
+
+col_hero, col_auth = st.columns([4, 1.3], vertical_alignment='top')
+with col_hero:
+    st.markdown(
+        '<div class="hero"><div class="eyebrow">SISTEMAS DE INFORMAÇÃO · BUSINESS INTELLIGENCE</div>'
+        '<h1>Observatório de Projetos <span style="color:#8EAAFF">↗</span></h1>'
+        '<p>Visão gerencial, acadêmica e interativa de projetos, sprints, tarefas, clientes e equipes.</p>'
+        '<span class="pill">● Dados consultados via API FastAPI</span></div>',
+        unsafe_allow_html=True,
+    )
+
+with col_auth:
+    st.write('')
+    if usuario is None:
+        if st.button('🔐 Fazer Login', type='primary', use_container_width=True):
+            modal_login(API_URL)
+    else:
+        perfil_label = 'Membro' if usuario['tipo'] == 'membro' else 'Cliente'
+        st.markdown(
+            f"<div style='text-align:right; margin-bottom:6px;'>"
+            f"<strong style='color:#ECF3FF;'>{escape(str(usuario['nome']))}</strong><br>"
+            f"<span class='pill'>{perfil_label}</span></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button('Sair', use_container_width=True):
+            st.session_state['usuario_logado'] = None
+            st.rerun()
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 completed = int((tasks['estado'] == 'concluida').sum())
@@ -418,692 +465,799 @@ k5.metric('Concluídas', fmt(completed))
 k6.metric('Conclusão', fmt(rate, 1, '%'))
 st.caption('Taxa de conclusão = tarefas com estado `concluida` / total de tarefas do recorte.')
 
-pages = st.tabs([
-    '◈  Visão geral',
-    '▤  Projetos',
-    '◷  Sprints & tarefas',
-    '♧  Clientes & equipes',
-    '📋 Tabelas do Dataset',
-    '◎  Qualidade & metodologia',
-    '⚙  Gerenciamento',
-])
+if usuario is None:
+    abas_permitidas = ['◈  Visão geral']
+elif usuario['tipo'] == 'cliente':
+    abas_permitidas = ['◈  Visão geral', '▤  Projetos', '◷  Sprints & tarefas']
+else:
+    abas_permitidas = [
+        '◈  Visão geral',
+        '▤  Projetos',
+        '◷  Sprints & tarefas',
+        '♧  Clientes & equipes',
+        '📋 Tabelas do Dataset',
+        '◎  Qualidade & metodologia',
+        '⚙  Gerenciamento',
+    ]
 
-with pages[0]:
-    st.write('')
-    lead = summary.sort_values('total_tarefas', ascending=False).iloc[0] if len(summary) else None
-    pct = fmt(rate, 1, '%')
-    cols = st.columns(3)
-    with cols[0]:
-        insight('📌 Retrato das entregas', f'{completed} de {len(tasks)} tarefas cadastradas no recorte estão concluídas ({pct}).')
-    with cols[1]:
-        insight(
-            '🏁 Projeto com mais tarefas',
-            f"{escape(str(lead['nome']))} reúne {int(lead['total_tarefas'])} tarefa(s) no recorte."
-            if lead is not None else 'Sem projetos disponíveis.',
-        )
-    with cols[2]:
-        insight('🔎 Backlog fora de sprint', f'{len(backlog)} tarefa(s) ainda não concluídas e sem sprint no recorte.')
-    a, b = st.columns([1.45, 1])
-    with a:
-        header('Situação das tarefas', 'Distribuição dos estados efetivamente cadastrados')
-        status_df = tasks.groupby('estado').size().reset_index(name='quantidade')
-        labels = {
-            'concluida': 'Concluída',
-            'em_andamento': 'Em andamento',
-            'nao_iniciada': 'Não iniciada',
-            'nao_informado': 'Não informado',
-        }
-        status_df['label'] = status_df['estado'].map(labels).fillna(status_df['estado'])
-        fig = px.bar(status_df, x='quantidade', y='label', orientation='h', text='quantidade', color='estado', color_discrete_map=COLORS)
-        fig.update_traces(textposition='outside', showlegend=False)
-        fig.update_xaxes(range=[0, max(2, status_df['quantidade'].max() * 1.18)] if len(status_df) else [0, 1])
-        draw(fig, height=320)
-    with b:
-        header('Projetos por empresa', 'Quantidade de projetos vinculados às empresas selecionadas')
-        pc = summary.groupby('empresa', dropna=False).size().reset_index(name='projetos')
-        fig = px.pie(pc, names='empresa', values='projetos', hole=.66, color_discrete_sequence=PALETTE)
-        fig.update_traces(textinfo='value+percent', hovertemplate='%{label}: %{value} projeto(s)<extra></extra>')
-        draw(fig, height=320)
-    a, b = st.columns([1.4, 1])
-    with a:
-        header('Volume de trabalho por projeto', 'Contagem de tarefas sem duplicações de JOIN com clientes ou sprints')
-        vol = summary.sort_values('total_tarefas', ascending=True)
-        fig = px.bar(vol, x='total_tarefas', y='nome', orientation='h', color='empresa', text='total_tarefas', color_discrete_sequence=PALETTE)
-        fig.update_traces(textposition='outside')
-        draw(fig, 370, legend=len(vol['empresa'].unique()) > 1)
-    with b:
-        header('Conclusão por projeto', 'Percentual de tarefas com estado concluída')
-        comp = summary[summary['total_tarefas'] > 0].sort_values('taxa_conclusao', ascending=True)
-        if comp.empty:
-            st.info('Não há tarefas para calcular percentuais.')
-        else:
-            fig = px.bar(comp, x='taxa_conclusao', y='nome', orientation='h', text='taxa_conclusao', color='nome', color_discrete_sequence=PALETTE)
-            fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside', showlegend=False)
-            fig.update_xaxes(range=[0, 110])
-            draw(fig, 370, percent=True)
+tabs_criadas = st.tabs(abas_permitidas)
+pages = dict(zip(abas_permitidas, tabs_criadas))
 
-with pages[1]:
-    st.write('')
-    header('Portfólio completo', 'Indicadores por projeto sem combinar métricas em um índice arbitrário')
-    display = summary[[
-        'id', 'nome', 'empresa', 'total_sprints', 'sprints_concluidas',
-        'total_tarefas', 'concluidas', 'em_andamento', 'nao_iniciadas', 'clientes', 'taxa_conclusao',
-    ]].rename(columns={
-        'id': 'ID', 'nome': 'Projeto', 'empresa': 'Empresa', 'total_sprints': 'Sprints',
-        'sprints_concluidas': 'Sprints finalizadas', 'total_tarefas': 'Tarefas', 'concluidas': 'Concluídas',
-        'em_andamento': 'Em andamento', 'nao_iniciadas': 'Não iniciadas', 'clientes': 'Clientes vinculados',
-        'taxa_conclusao': 'Conclusão (%)',
-    })
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={'Conclusão (%)': st.column_config.ProgressColumn('Conclusão (%)', min_value=0, max_value=100, format='%.1f%%')},
-    )
-    header('Análise detalhada', 'Selecione um projeto para investigar suas demandas, sprints e tarefas')
-    project_id = st.selectbox(
-        'Projeto em destaque',
-        options=summary['id'].tolist(),
-        format_func=lambda x: next(f'{r.nome} — {r.empresa}' for r in summary.itertuples() if r.id == x),
-    )
-    selected = summary[summary['id'] == project_id].iloc[0]
-    st.markdown(
-        f'<div class="info-card"><strong style="color:#EFF5FF;font-size:1.1rem">{escape(str(selected["nome"]))}</strong>'
-        f'<p style="margin:7px 0;color:#BDCCE0">{escape(str(selected["descricao"]))}</p>'
-        f'<small>Empresa responsável: {escape(str(selected["empresa"]))}</small></div>',
-        unsafe_allow_html=True,
-    )
-    ca, cb, cc, cd = st.columns(4)
-    ca.metric('Tarefas do projeto', fmt(selected['total_tarefas']))
-    cb.metric('Concluídas', fmt(selected['concluidas']))
-    cc.metric('Sprints registradas', fmt(selected['total_sprints']))
-    cd.metric('Clientes relacionados', fmt(selected['clientes']))
-    client_ids = demands.loc[demands['id_projeto'] == project_id, 'id_cliente'].tolist()
-    client_names = m['clients'][m['clients']['id'].isin(client_ids)][['id', 'nome']].rename(columns={'id': 'ID', 'nome': 'Cliente'})
-    st.markdown('**Clientes associados à demanda**')
-    if client_names.empty:
-        st.info('Nenhum cliente associado a esse projeto.')
-    else:
-        st.dataframe(client_names, hide_index=True, use_container_width=True)
-
-with pages[2]:
-    st.write('')
-    a, b, c, d = st.columns(4)
-    durs = sprint_metrics['duracao_dias']
-    a.metric('Sprints cadastradas', fmt(len(sprints)))
-    b.metric('Sprints marcadas concluídas', fmt((sprints['isDone'] == 1).sum()))
-    c.metric('Duração média cadastrada', fmt(durs.dropna().mean(), 1, ' dias'))
-    d.metric('Tarefas sem sprint', fmt(tasks['id_sprint'].isna().sum()))
-    header('Distribuição de tarefas por sprint', 'Associação atual de tarefas; não é histórico de movimentações')
-    sprint_list = sprints.merge(projects[['id', 'nome']].rename(columns={'id': 'id_projeto', 'nome': 'projeto'}), on='id_projeto', how='left')
-    sprint_list['rotulo'] = sprint_list['projeto'] + ' · Sprint ' + sprint_list['id'].astype(str)
-    bys = tasks.groupby(['id_projeto', 'id_sprint', 'estado']).size().reset_index(name='quantidade')
-    bys = bys.merge(sprint_list[['id', 'id_projeto', 'rotulo']], left_on=['id_projeto', 'id_sprint'], right_on=['id_projeto', 'id'], how='inner')
-    if bys.empty:
-        st.info('Não há tarefas associadas a sprints neste recorte.')
-    else:
-        fig = px.bar(
-            bys, x='rotulo', y='quantidade', color='estado', barmode='stack', color_discrete_map=COLORS,
-            labels={'rotulo': 'Sprint', 'quantidade': 'Tarefas', 'estado': 'Estado'},
-        )
-        fig.update_xaxes(tickangle=-30)
-        draw(fig, 380, legend=True)
-    a, b = st.columns([1.2, 1])
-    with a:
-        header('Calendário de sprints', 'Intervalos planejados/cadastrados')
-        timeline = sprint_list.dropna(subset=['data_in', 'data_fin']).copy()
-        timeline = timeline[timeline['data_fin'] >= timeline['data_in']]
-        if timeline.empty:
-            st.info('Nenhuma sprint possui datas de início e fim válidas.')
-        else:
-            fig = px.timeline(
-                timeline, x_start='data_in', x_end='data_fin', y='rotulo', color='projeto',
-                hover_data=['id', 'isDone'], color_discrete_sequence=PALETTE,
+if '◈  Visão geral' in pages:
+    with pages['◈  Visão geral']:
+        st.write('')
+        lead = summary.sort_values('total_tarefas', ascending=False).iloc[0] if len(summary) else None
+        pct = fmt(rate, 1, '%')
+        cols = st.columns(3)
+        with cols[0]:
+            insight('📌 Retrato das entregas', f'{completed} de {len(tasks)} tarefas cadastradas no recorte estão concluídas ({pct}).')
+        with cols[1]:
+            insight(
+                '🏁 Projeto com mais tarefas',
+                f"{escape(str(lead['nome']))} reúne {int(lead['total_tarefas'])} tarefa(s) no recorte."
+                if lead is not None else 'Sem projetos disponíveis.',
             )
-            fig.update_yaxes(autorange='reversed')
-            draw(fig, max(330, min(620, 90 + 50 * len(timeline))), legend=True)
-    with b:
-        header('Estados das sprints', 'O campo `isDone` é independente do status de cada tarefa')
-        states = sprints['isDone'].map({1: 'Finalizada', 0: 'Não finalizada'}).fillna('Não informado').value_counts().reset_index()
-        states.columns = ['estado', 'quantidade']
-        fig = px.pie(states, names='estado', values='quantidade', hole=.6, color_discrete_sequence=PALETTE)
-        draw(fig, 330)
-    header('Explorar tarefas', 'Os filtros abaixo valem para a tabela')
-    options = sorted(tasks['estado'].unique())
-    chosen = st.multiselect('Estados da tabela', options=options, default=options)
-    backlog_only = st.checkbox('Mostrar apenas backlog fora de sprint')
-    task_source = backlog if backlog_only else tasks
-    dtable = task_source[task_source['estado'].isin(chosen)].assign(projeto=lambda frame: frame['id_projeto'].map(project_names))
-    dtable = dtable[['id', 'projeto', 'id_sprint', 'estado', 'descricao', 'data_cria', 'data_fin']].rename(columns={
-        'id': 'ID', 'projeto': 'Projeto', 'id_sprint': 'Sprint', 'estado': 'Estado', 'descricao': 'Descrição',
-        'data_cria': 'Criada em', 'data_fin': 'Finalizada em',
-    })
-    st.dataframe(dtable, hide_index=True, use_container_width=True, height=370)
+        with cols[2]:
+            insight('🔎 Backlog fora de sprint', f'{len(backlog)} tarefa(s) ainda não concluídas e sem sprint no recorte.')
+        a, b = st.columns([1.45, 1])
+        with a:
+            header('Situação das tarefas', 'Distribuição dos estados efetivamente cadastrados')
+            status_df = tasks.groupby('estado').size().reset_index(name='quantidade')
+            labels = {
+                'concluida': 'Concluída',
+                'em_andamento': 'Em andamento',
+                'nao_iniciada': 'Não iniciada',
+                'nao_informado': 'Não informado',
+            }
+            status_df['label'] = status_df['estado'].map(labels).fillna(status_df['estado'])
+            fig = px.bar(status_df, x='quantidade', y='label', orientation='h', text='quantidade', color='estado', color_discrete_map=COLORS)
+            fig.update_traces(textposition='outside', showlegend=False)
+            fig.update_xaxes(range=[0, max(2, status_df['quantidade'].max() * 1.18)] if len(status_df) else [0, 1])
+            draw(fig, height=320)
+        with b:
+            header('Projetos por empresa', 'Quantidade de projetos vinculados às empresas selecionadas')
+            pc = summary.groupby('empresa', dropna=False).size().reset_index(name='projetos')
+            fig = px.pie(pc, names='empresa', values='projetos', hole=.66, color_discrete_sequence=PALETTE)
+            fig.update_traces(textinfo='value+percent', hovertemplate='%{label}: %{value} projeto(s)<extra></extra>')
+            draw(fig, height=320)
+        a, b = st.columns([1.4, 1])
+        with a:
+            header('Volume de trabalho por projeto', 'Contagem de tarefas sem duplicações de JOIN com clientes ou sprints')
+            vol = summary.sort_values('total_tarefas', ascending=True)
+            fig = px.bar(vol, x='total_tarefas', y='nome', orientation='h', color='empresa', text='total_tarefas', color_discrete_sequence=PALETTE)
+            fig.update_traces(textposition='outside')
+            draw(fig, 370, legend=len(vol['empresa'].unique()) > 1)
+        with b:
+            header('Conclusão por projeto', 'Percentual de tarefas com estado concluída')
+            comp = summary[summary['total_tarefas'] > 0].sort_values('taxa_conclusao', ascending=True)
+            if comp.empty:
+                st.info('Não há tarefas para calcular percentuais.')
+            else:
+                fig = px.bar(comp, x='taxa_conclusao', y='nome', orientation='h', text='taxa_conclusao', color='nome', color_discrete_sequence=PALETTE)
+                fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside', showlegend=False)
+                fig.update_xaxes(range=[0, 110])
+                draw(fig, 370, percent=True)
 
-with pages[3]:
-    st.write('')
-    aa, bb, cc, dd = st.columns(4)
-    aa.metric('Empresas do recorte', fmt(len(m['companies'])))
-    bb.metric('Membros das empresas', fmt(len(m['members'])))
-    cc.metric('Clientes vinculados', fmt(len(m['clients'])))
-    dd.metric('Relações projeto–cliente', fmt(len(demands)))
-    a, b = st.columns([1.1, 1])
-    with a:
-        header('Membros por empresa', 'Não significa participantes de cada projeto')
-        mc = m['members'].groupby('id_empresa').size().reset_index(name='membros')
-        mc = mc.merge(all_data['empresas'][['id', 'nome']], left_on='id_empresa', right_on='id', how='left')
-        if mc.empty:
-            st.info('Sem membros cadastrados.')
+if '▤  Projetos' in pages:
+    with pages['▤  Projetos']:
+        st.write('')
+        header('Portfólio completo', 'Indicadores por projeto sem combinar métricas em um índice arbitrário')
+        display = summary[[
+            'id', 'nome', 'empresa', 'total_sprints', 'sprints_concluidas',
+            'total_tarefas', 'concluidas', 'em_andamento', 'nao_iniciadas', 'clientes', 'taxa_conclusao',
+        ]].rename(columns={
+            'id': 'ID', 'nome': 'Projeto', 'empresa': 'Empresa', 'total_sprints': 'Sprints',
+            'sprints_concluidas': 'Sprints finalizadas', 'total_tarefas': 'Tarefas', 'concluidas': 'Concluídas',
+            'em_andamento': 'Em andamento', 'nao_iniciadas': 'Não iniciadas', 'clientes': 'Clientes vinculados',
+            'taxa_conclusao': 'Conclusão (%)',
+        })
+        st.dataframe(
+            display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={'Conclusão (%)': st.column_config.ProgressColumn('Conclusão (%)', min_value=0, max_value=100, format='%.1f%%')},
+        )
+        header('Análise detalhada', 'Selecione um projeto para investigar suas demandas, sprints e tarefas')
+        project_id = st.selectbox(
+            'Projeto em destaque',
+            options=summary['id'].tolist(),
+            format_func=lambda x: next(f'{r.nome} — {r.empresa}' for r in summary.itertuples() if r.id == x),
+        )
+        selected = summary[summary['id'] == project_id].iloc[0]
+        st.markdown(
+            f'<div class="info-card"><strong style="color:#EFF5FF;font-size:1.1rem">{escape(str(selected["nome"]))}</strong>'
+            f'<p style="margin:7px 0;color:#BDCCE0">{escape(str(selected["descricao"]))}</p>'
+            f'<small>Empresa responsável: {escape(str(selected["empresa"]))}</small></div>',
+            unsafe_allow_html=True,
+        )
+        ca, cb, cc, cd = st.columns(4)
+        ca.metric('Tarefas do projeto', fmt(selected['total_tarefas']))
+        cb.metric('Concluídas', fmt(selected['concluidas']))
+        cc.metric('Sprints registradas', fmt(selected['total_sprints']))
+        cd.metric('Clientes relacionados', fmt(selected['clientes']))
+        client_ids = demands.loc[demands['id_projeto'] == project_id, 'id_cliente'].tolist()
+        client_names = m['clients'][m['clients']['id'].isin(client_ids)][['id', 'nome']].rename(columns={'id': 'ID', 'nome': 'Cliente'})
+        st.markdown('**Clientes associados à demanda**')
+        if client_names.empty:
+            st.info('Nenhum cliente associado a esse projeto.')
         else:
-            fig = px.bar(mc, x='membros', y='nome', orientation='h', color='nome', text='membros', color_discrete_sequence=PALETTE)
-            fig.update_traces(textposition='outside', showlegend=False)
-            draw(fig, 340)
-    with b:
-        header('Cargos cadastrados', 'Distribuição descritiva do cadastro de membros')
-        positions = m['members'].groupby('cargo').size().reset_index(name='membros')
-        if positions.empty:
-            st.info('Sem cargos cadastrados.')
+            st.dataframe(client_names, hide_index=True, use_container_width=True)
+
+if '◷  Sprints & tarefas' in pages:
+    with pages['◷  Sprints & tarefas']:
+        st.write('')
+        a, b, c, d = st.columns(4)
+        durs = sprint_metrics['duracao_dias']
+        a.metric('Sprints cadastradas', fmt(len(sprints)))
+        b.metric('Sprints marcadas concluídas', fmt((sprints['isDone'] == 1).sum()))
+        c.metric('Duração média cadastrada', fmt(durs.dropna().mean(), 1, ' dias'))
+        d.metric('Tarefas sem sprint', fmt(tasks['id_sprint'].isna().sum()))
+        header('Distribuição de tarefas por sprint', 'Associação atual de tarefas; não é histórico de movimentações')
+        sprint_list = sprints.merge(projects[['id', 'nome']].rename(columns={'id': 'id_projeto', 'nome': 'projeto'}), on='id_projeto', how='left')
+        sprint_list['rotulo'] = sprint_list['projeto'] + ' · Sprint ' + sprint_list['id'].astype(str)
+        bys = tasks.groupby(['id_projeto', 'id_sprint', 'estado']).size().reset_index(name='quantidade')
+        bys = bys.merge(sprint_list[['id', 'id_projeto', 'rotulo']], left_on=['id_projeto', 'id_sprint'], right_on=['id_projeto', 'id'], how='inner')
+        if bys.empty:
+            st.info('Não há tarefas associadas a sprints neste recorte.')
         else:
-            fig = px.bar(positions, x='membros', y='cargo', orientation='h', text='membros', color='cargo', color_discrete_sequence=PALETTE)
-            fig.update_traces(textposition='outside', showlegend=False)
-            draw(fig, 340)
-    header('Relacionamento entre clientes e projetos', 'JOIN: demanda → projetos → clientes')
-    relations = demands.merge(projects[['id', 'nome', 'id_empresa']].rename(columns={'id': 'id_projeto', 'nome': 'projeto'}), on='id_projeto', how='left')
-    relations = relations.merge(all_data['clientes'][['id', 'nome']].rename(columns={'id': 'id_cliente', 'nome': 'cliente'}), on='id_cliente', how='left')
-    relations = relations.merge(all_data['empresas'][['id', 'nome']].rename(columns={'id': 'id_empresa', 'nome': 'empresa'}), on='id_empresa', how='left')
-    st.dataframe(
-        relations[['empresa', 'projeto', 'cliente']].rename(columns={'empresa': 'Empresa', 'projeto': 'Projeto', 'cliente': 'Cliente'}),
-        hide_index=True,
-        use_container_width=True,
-    )
+            fig = px.bar(
+                bys, x='rotulo', y='quantidade', color='estado', barmode='stack', color_discrete_map=COLORS,
+                labels={'rotulo': 'Sprint', 'quantidade': 'Tarefas', 'estado': 'Estado'},
+            )
+            fig.update_xaxes(tickangle=-30)
+            draw(fig, 380, legend=True)
+        a, b = st.columns([1.2, 1])
+        with a:
+            header('Calendário de sprints', 'Intervalos planejados/cadastrados')
+            timeline = sprint_list.dropna(subset=['data_in', 'data_fin']).copy()
+            timeline = timeline[timeline['data_fin'] >= timeline['data_in']]
+            if timeline.empty:
+                st.info('Nenhuma sprint possui datas de início e fim válidas.')
+            else:
+                fig = px.timeline(
+                    timeline, x_start='data_in', x_end='data_fin', y='rotulo', color='projeto',
+                    hover_data=['id', 'isDone'], color_discrete_sequence=PALETTE,
+                )
+                fig.update_yaxes(autorange='reversed')
+                draw(fig, max(330, min(620, 90 + 50 * len(timeline))), legend=True)
+        with b:
+            header('Estados das sprints', 'O campo `isDone` é independente do status de cada tarefa')
+            states = sprints['isDone'].map({1: 'Finalizada', 0: 'Não finalizada'}).fillna('Não informado').value_counts().reset_index()
+            states.columns = ['estado', 'quantidade']
+            fig = px.pie(states, names='estado', values='quantidade', hole=.6, color_discrete_sequence=PALETTE)
+            draw(fig, 330)
+        header('Explorar tarefas', 'Os filtros abaixo valem para a tabela')
+        options = sorted(tasks['estado'].unique())
+        chosen = st.multiselect('Estados da tabela', options=options, default=options)
+        backlog_only = st.checkbox('Mostrar apenas backlog fora de sprint')
+        task_source = backlog if backlog_only else tasks
+        dtable = task_source[task_source['estado'].isin(chosen)].assign(projeto=lambda frame: frame['id_projeto'].map(project_names))
+        dtable = dtable[['id', 'projeto', 'id_sprint', 'estado', 'descricao', 'data_cria', 'data_fin']].rename(columns={
+            'id': 'ID', 'projeto': 'Projeto', 'id_sprint': 'Sprint', 'estado': 'Estado', 'descricao': 'Descrição',
+            'data_cria': 'Criada em', 'data_fin': 'Finalizada em',
+        })
+        st.dataframe(dtable, hide_index=True, use_container_width=True, height=370)
+
+if '♧  Clientes & equipes' in pages:
+    with pages['♧  Clientes & equipes']:
+        st.write('')
+        aa, bb, cc, dd = st.columns(4)
+        aa.metric('Empresas do recorte', fmt(len(m['companies'])))
+        bb.metric('Membros das empresas', fmt(len(m['members'])))
+        cc.metric('Clientes vinculados', fmt(len(m['clients'])))
+        dd.metric('Relações projeto–cliente', fmt(len(demands)))
+        a, b = st.columns([1.1, 1])
+        with a:
+            header('Membros por empresa', 'Não significa participantes de cada projeto')
+            mc = m['members'].groupby('id_empresa').size().reset_index(name='membros')
+            mc = mc.merge(all_data['empresas'][['id', 'nome']], left_on='id_empresa', right_on='id', how='left')
+            if mc.empty:
+                st.info('Sem membros cadastrados.')
+            else:
+                fig = px.bar(mc, x='membros', y='nome', orientation='h', color='nome', text='membros', color_discrete_sequence=PALETTE)
+                fig.update_traces(textposition='outside', showlegend=False)
+                draw(fig, 340)
+        with b:
+            header('Cargos cadastrados', 'Distribuição descritiva do cadastro de membros')
+            positions = m['members'].groupby('cargo').size().reset_index(name='membros')
+            if positions.empty:
+                st.info('Sem cargos cadastrados.')
+            else:
+                fig = px.bar(positions, x='membros', y='cargo', orientation='h', text='membros', color='cargo', color_discrete_sequence=PALETTE)
+                fig.update_traces(textposition='outside', showlegend=False)
+                draw(fig, 340)
+        header('Relacionamento entre clientes e projetos', 'JOIN: demanda → projetos → clientes')
+        relations = demands.merge(projects[['id', 'nome', 'id_empresa']].rename(columns={'id': 'id_projeto', 'nome': 'projeto'}), on='id_projeto', how='left')
+        relations = relations.merge(all_data['clientes'][['id', 'nome']].rename(columns={'id': 'id_cliente', 'nome': 'cliente'}), on='id_cliente', how='left')
+        relations = relations.merge(all_data['empresas'][['id', 'nome']].rename(columns={'id': 'id_empresa', 'nome': 'empresa'}), on='id_empresa', how='left')
+        st.dataframe(
+            relations[['empresa', 'projeto', 'cliente']].rename(columns={'empresa': 'Empresa', 'projeto': 'Projeto', 'cliente': 'Cliente'}),
+            hide_index=True,
+            use_container_width=True,
+        )
 
 # =========================================================================
 # ABA 5: TABELAS DO DATASET (VISUALIZAÇÃO COMPLETA VIA API)
 # =========================================================================
-with pages[4]:
-    st.write('')
-    header('Visualização do Banco de Dados', 'Exibição completa de todas as tabelas retornadas pela API, sem filtros de tela')
+if '📋 Tabelas do Dataset' in pages:
+    with pages['📋 Tabelas do Dataset']:
+        st.write('')
+        header('Visualização do Banco de Dados', 'Exibição completa de todas as tabelas retornadas pela API, sem filtros de tela')
 
-    tab_emp, tab_cli, tab_proj, tab_memb, tab_dem, tab_spr, tab_tar = st.tabs([
-        '🏢 Empresas', '👤 Clientes', '📂 Projetos', '👥 Membros', '🔗 Demanda', '🏃 Sprints', '📌 Tarefas',
-    ])
+        tab_emp, tab_cli, tab_proj, tab_memb, tab_dem, tab_spr, tab_tar = st.tabs([
+            '🏢 Empresas', '👤 Clientes', '📂 Projetos', '👥 Membros', '🔗 Demanda', '🏃 Sprints', '📌 Tarefas',
+        ])
 
-    with tab_emp:
-        st.subheader('Tabela: Empresas')
-        st.dataframe(all_data['empresas'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['empresas'])}")
+        with tab_emp:
+            st.subheader('Tabela: Empresas')
+            st.dataframe(all_data['empresas'], use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['empresas'])}")
 
-    with tab_cli:
-        st.subheader('Tabela: Clientes')
-        st.dataframe(all_data['clientes'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['clientes'])}")
+        with tab_cli:
+            st.subheader('Tabela: Clientes')
+            st.dataframe(all_data['clientes'].drop(columns=['senha', 'possui_senha'], errors='ignore'), use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['clientes'])}")
 
-    with tab_proj:
-        st.subheader('Tabela: Projetos')
-        st.dataframe(all_data['projetos'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['projetos'])}")
+        with tab_proj:
+            st.subheader('Tabela: Projetos')
+            st.dataframe(all_data['projetos'], use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['projetos'])}")
 
-    with tab_memb:
-        st.subheader('Tabela: Membros')
-        st.dataframe(all_data['membros'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['membros'])}")
+        with tab_memb:
+            st.subheader('Tabela: Membros')
+            st.dataframe(all_data['membros'].drop(columns=['senha', 'possui_senha'], errors='ignore'), use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['membros'])}")
 
-    with tab_dem:
-        st.subheader('Tabela: Demanda (Projeto ↔ Cliente)')
-        st.dataframe(all_data['demanda'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['demanda'])}")
+        with tab_dem:
+            st.subheader('Tabela: Demanda (Projeto ↔ Cliente)')
+            st.dataframe(all_data['demanda'], use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['demanda'])}")
 
-    with tab_spr:
-        st.subheader('Tabela: Sprints')
-        st.dataframe(all_data['sprints'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['sprints'])}")
+        with tab_spr:
+            st.subheader('Tabela: Sprints')
+            st.dataframe(all_data['sprints'], use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['sprints'])}")
 
-    with tab_tar:
-        st.subheader('Tabela: Tarefas')
-        st.dataframe(all_data['tarefas'], use_container_width=True, hide_index=True)
-        st.caption(f"Total de registros: {len(all_data['tarefas'])}")
+        with tab_tar:
+            st.subheader('Tabela: Tarefas')
+            st.dataframe(all_data['tarefas'], use_container_width=True, hide_index=True)
+            st.caption(f"Total de registros: {len(all_data['tarefas'])}")
 
-with pages[5]:
-    st.write('')
-    header('Do relatório ao painel', 'EJFlow · Gerenciador de Projetos para Empresas Juniores · UFRN')
-    insight('Duas bases, dois objetivos', 'Este painel consulta a API REST do EJFlow e aplica os indicadores que suas sete tabelas permitem calcular.')
-    header('Auditoria de dados', 'Verificações no banco inteiro, independentemente dos filtros laterais')
-    checks = quality_df.copy()
-    checks['Situação'] = checks['Ocorrências'].map(lambda n: 'Sem ocorrências' if n == 0 else 'Com ocorrências')
-    st.dataframe(checks, hide_index=True, use_container_width=True)
-    header('Catálogo de dados', 'Modelo relacional extraído do arquivo SQL fornecido')
-    catalog = pd.DataFrame([
-        ('empresas', 'Empresas e seus representantes', '1:N com projetos e membros'),
-        ('clientes', 'Clientes cadastrados', 'N:N com projetos via demanda'),
-        ('projetos', 'Projetos e empresa responsável', '1:N com sprints e tarefas'),
-        ('membros', 'Integrantes vinculados a empresas', 'Não há vínculo direto com projetos'),
-        ('demanda', 'Associação projeto–cliente', 'Chave primária composta'),
-        ('sprints', 'Períodos e indicador de finalização', 'Pertencem a um projeto'),
-        ('tarefas', 'Atividades e estados', 'Projeto obrigatório; sprint opcional'),
-    ], columns=['Tabela', 'Descrição', 'Relação'])
-    catalog['Linhas no MySQL'] = [len(all_data[k]) for k in TABLES]
-    st.dataframe(catalog, hide_index=True, use_container_width=True)
-    header('Exportação do recorte', 'Faça download para validação acadêmica e reprodução dos resultados')
-    frames = {
-        'projetos_resumo.csv': display,
-        'tarefas.csv': tasks.copy(),
-        'sprints.csv': sprints.copy(),
-        'sprints_indicadores.csv': sprint_metrics,
-        'auditoria_banco.csv': checks.copy(),
-    }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as z:
-        for filename, frame in frames.items():
-            z.writestr(filename, frame.to_csv(index=False).encode('utf-8-sig'))
-    st.download_button(
-        '↓ Baixar relatório de dados (.zip)',
-        data=buffer.getvalue(),
-        file_name='ejflow_analise_mysql.zip',
-        mime='application/zip',
-        type='primary',
-    )
+if '◎  Qualidade & metodologia' in pages:
+    with pages['◎  Qualidade & metodologia']:
+        st.write('')
+        header('Do relatório ao painel', 'EJFlow · Gerenciador de Projetos para Empresas Juniores · UFRN')
+        insight('Duas bases, dois objetivos', 'Este painel consulta a API REST do EJFlow e aplica os indicadores que suas sete tabelas permitem calcular.')
+        header('Auditoria de dados', 'Verificações no banco inteiro, independentemente dos filtros laterais')
+        checks = quality_df.copy()
+        checks['Situação'] = checks['Ocorrências'].map(lambda n: 'Sem ocorrências' if n == 0 else 'Com ocorrências')
+        st.dataframe(checks, hide_index=True, use_container_width=True)
+        header('Catálogo de dados', 'Modelo relacional extraído do arquivo SQL fornecido')
+        catalog = pd.DataFrame([
+            ('empresas', 'Empresas e seus representantes', '1:N com projetos e membros'),
+            ('clientes', 'Clientes cadastrados', 'N:N com projetos via demanda'),
+            ('projetos', 'Projetos e empresa responsável', '1:N com sprints e tarefas'),
+            ('membros', 'Integrantes vinculados a empresas', 'Não há vínculo direto com projetos'),
+            ('demanda', 'Associação projeto–cliente', 'Chave primária composta'),
+            ('sprints', 'Períodos e indicador de finalização', 'Pertencem a um projeto'),
+            ('tarefas', 'Atividades e estados', 'Projeto obrigatório; sprint opcional'),
+        ], columns=['Tabela', 'Descrição', 'Relação'])
+        catalog['Linhas no MySQL'] = [len(all_data[k]) for k in TABLES]
+        st.dataframe(catalog, hide_index=True, use_container_width=True)
+        header('Exportação do recorte', 'Faça download para validação acadêmica e reprodução dos resultados')
+        frames = {
+            'projetos_resumo.csv': display,
+            'tarefas.csv': tasks.copy(),
+            'sprints.csv': sprints.copy(),
+            'sprints_indicadores.csv': sprint_metrics,
+            'auditoria_banco.csv': checks.copy(),
+        }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+            for filename, frame in frames.items():
+                z.writestr(filename, frame.to_csv(index=False).encode('utf-8-sig'))
+        st.download_button(
+            '↓ Baixar relatório de dados (.zip)',
+            data=buffer.getvalue(),
+            file_name='ejflow_analise_mysql.zip',
+            mime='application/zip',
+            type='primary',
+        )
 
 # =========================================================================
 # ABA 7: GERENCIAMENTO (INSERÇÃO, ATUALIZAÇÃO E EXCLUSÃO / DESVINCULAÇÃO VIA API)
 # =========================================================================
 
-with pages[6]:
-    st.write('')
-    header('Gerenciamento do Banco de Dados', 'Adicione, atualize ou remova registros e vínculos através da API FastAPI')
+if '⚙  Gerenciamento' in pages and usuario and usuario['tipo'] == 'membro':
+    with pages['⚙  Gerenciamento']:
+        st.write('')
+        header('Gerenciamento do Banco de Dados', 'Adicione, atualize ou remova registros e vínculos através da API FastAPI')
 
-    tab_create, tab_delete = st.tabs(['➕ Inserir / Atualizar Dados', '🗑️ Excluir / Desvincular Dados'])
+        tab_create, tab_delete = st.tabs(['➕ Inserir / Atualizar Dados', '🗑️ Excluir / Desvincular Dados'])
 
-    # --- ABA DE INSERÇÃO E ATUALIZAÇÃO ---
-    with tab_create:
-        acao_escolhida = st.selectbox(
-            'Selecione a operação',
-            ['Inserir Novo Registro', 'Atualizar Estado de Tarefa', 'Associar Tarefa a Sprint', 'Vincular Projeto a Cliente'],
-        )
+        # --- ABA DE INSERÇÃO E ATUALIZAÇÃO ---
+        with tab_create:
+            acao_escolhida = st.selectbox(
+                'Selecione a operação',
+                [
+                    'Inserir Novo Registro',
+                    'Atualizar Estado de Tarefa',
+                    'Associar Tarefa a Sprint',
+                    'Vincular Projeto a Cliente',
+                    'Definir / Alterar Senha de Usuário',
+                ],
+            )
 
-        if acao_escolhida == 'Inserir Novo Registro':
-            tipo_insercao = st.selectbox('Entidade', ['Empresa', 'Membro', 'Cliente', 'Projeto', 'Sprint', 'Tarefa'])
+            if acao_escolhida == 'Inserir Novo Registro':
+                tipo_insercao = st.selectbox('Entidade', ['Empresa', 'Membro', 'Cliente', 'Projeto', 'Sprint', 'Tarefa'])
 
-            if tipo_insercao == 'Empresa':
-                with st.form('form_empresa'):
-                    id_emp = st.number_input('ID da Empresa', step=1)
-                    nome_emp = st.text_input('Nome da Empresa')
-                    rep_emp = st.text_input('Representante')
-                    if st.form_submit_button('Salvar Empresa'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/empresas',
-                            json_body={'id': int(id_emp), 'nome': nome_emp, 'rep': rep_emp},
+                if tipo_insercao == 'Empresa':
+                    with st.form('form_empresa'):
+                        id_emp = st.number_input('ID da Empresa', step=1)
+                        nome_emp = st.text_input('Nome da Empresa')
+                        rep_emp = st.text_input('Representante')
+                        if st.form_submit_button('Salvar Empresa'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/empresas',
+                                json_body={'id': int(id_emp), 'nome': nome_emp, 'rep': rep_emp},
+                            )
+                            if ok:
+                                st.success('Empresa cadastrada com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar empresa: {err}')
+
+                elif tipo_insercao == 'Membro':
+                    with st.form('form_membro'):
+                        id_memb = st.number_input('ID do Membro', step=1)
+                        empresas_df = all_data['empresas']
+                        emp_escolhida = st.selectbox(
+                            'Empresa',
+                            options=empresas_df['id'].tolist(),
+                            format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                         )
-                        if ok:
-                            st.success('Empresa cadastrada com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar empresa: {err}')
+                        nome_memb = st.text_input('Nome do Membro')
+                        email_memb = st.text_input('E-mail')
+                        cargo_memb = st.text_input('Cargo')
+                        if st.form_submit_button('Salvar Membro'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/membros',
+                                json_body={
+                                    'id': int(id_memb),
+                                    'id_empresa': int(emp_escolhida),
+                                    'nome': nome_memb,
+                                    'email': email_memb,
+                                    'cargo': cargo_memb,
+                                },
+                            )
+                            if ok:
+                                st.success('Membro cadastrado com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar membro: {err}')
 
-            elif tipo_insercao == 'Membro':
-                with st.form('form_membro'):
-                    id_memb = st.number_input('ID do Membro', step=1)
-                    empresas_df = all_data['empresas']
-                    emp_escolhida = st.selectbox(
-                        'Empresa',
-                        options=empresas_df['id'].tolist(),
-                        format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                    )
-                    nome_memb = st.text_input('Nome do Membro')
-                    email_memb = st.text_input('E-mail')
-                    cargo_memb = st.text_input('Cargo')
-                    if st.form_submit_button('Salvar Membro'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/membros',
-                            json_body={
-                                'id': int(id_memb),
-                                'id_empresa': int(emp_escolhida),
-                                'nome': nome_memb,
-                                'email': email_memb,
-                                'cargo': cargo_memb,
-                            },
+                elif tipo_insercao == 'Cliente':
+                    with st.form('form_cliente'):
+                        nome_cli = st.text_input('Nome do Cliente')
+                        email_cli = st.text_input('E-mail')
+                        empresas_df = all_data['empresas']
+                        emp_cli = st.selectbox(
+                            'Empresa Vinculada',
+                            options=empresas_df['id'].tolist(),
+                            format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                         )
-                        if ok:
-                            st.success('Membro cadastrado com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar membro: {err}')
+                        if st.form_submit_button('Salvar Cliente'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/clientes',
+                                json_body={'nome': nome_cli, 'email': email_cli, 'id_empresa': int(emp_cli)},
+                            )
+                            if ok:
+                                st.success('Cliente cadastrado com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar cliente: {err}')
 
-            elif tipo_insercao == 'Cliente':
-                with st.form('form_cliente'):
-                    nome_cli = st.text_input('Nome do Cliente')
-                    email_cli = st.text_input('E-mail')
-                    empresas_df = all_data['empresas']
-                    emp_cli = st.selectbox(
-                        'Empresa Vinculada',
-                        options=empresas_df['id'].tolist(),
-                        format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                    )
-                    if st.form_submit_button('Salvar Cliente'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/clientes',
-                            json_body={'nome': nome_cli, 'email': email_cli, 'id_empresa': int(emp_cli)},
+                elif tipo_insercao == 'Projeto':
+                    with st.form('form_projeto'):
+                        id_proj = st.number_input('ID do Projeto', step=1)
+                        empresas_df = all_data['empresas']
+                        emp_proj = st.selectbox(
+                            'Empresa Responsável',
+                            options=empresas_df['id'].tolist(),
+                            format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                         )
-                        if ok:
-                            st.success('Cliente cadastrado com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar cliente: {err}')
-
-            elif tipo_insercao == 'Projeto':
-                with st.form('form_projeto'):
-                    id_proj = st.number_input('ID do Projeto', step=1)
-                    empresas_df = all_data['empresas']
-                    emp_proj = st.selectbox(
-                        'Empresa Responsável',
-                        options=empresas_df['id'].tolist(),
-                        format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                    )
-                    nome_proj = st.text_input('Nome do Projeto')
-                    desc_proj = st.text_area('Descrição')
-                    clientes_df = all_data['clientes']
-                    cli_proj = st.selectbox(
-                        'Cliente Inicial (Opcional)',
-                        options=[None] + clientes_df['id'].tolist(),
-                        format_func=lambda x: 'Nenhum' if x is None else f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                    )
-                    if st.form_submit_button('Salvar Projeto'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/projetos',
-                            json_body={
-                                'id': int(id_proj),
-                                'id_empresa': int(emp_proj),
-                                'nome': nome_proj,
-                                'descricao': desc_proj,
-                                'id_cliente': int(cli_proj) if cli_proj is not None else None,
-                            },
+                        nome_proj = st.text_input('Nome do Projeto')
+                        desc_proj = st.text_area('Descrição')
+                        clientes_df = all_data['clientes']
+                        cli_proj = st.selectbox(
+                            'Cliente Inicial (Opcional)',
+                            options=[None] + clientes_df['id'].tolist(),
+                            format_func=lambda x: 'Nenhum' if x is None else f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                         )
-                        if ok:
-                            st.success('Projeto cadastrado com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar projeto: {err}')
+                        if st.form_submit_button('Salvar Projeto'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/projetos',
+                                json_body={
+                                    'id': int(id_proj),
+                                    'id_empresa': int(emp_proj),
+                                    'nome': nome_proj,
+                                    'descricao': desc_proj,
+                                    'id_cliente': int(cli_proj) if cli_proj is not None else None,
+                                },
+                            )
+                            if ok:
+                                st.success('Projeto cadastrado com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar projeto: {err}')
 
-            elif tipo_insercao == 'Sprint':
-                with st.form('form_sprint'):
-                    proj_sprint = st.selectbox(
-                        'Projeto',
-                        options=projects['id'].tolist(),
-                        format_func=lambda x: f'{project_names.get(x)} (ID: {x})',
-                    )
-                    is_done_sprint = st.selectbox('Concluída?', [0, 1], format_func=lambda x: 'Sim' if x == 1 else 'Não')
-                    data_in = st.text_input('Data Início (YYYY-MM-DD HH:MM:SS)', '2026-03-01 08:00:00')
-                    data_fin = st.text_input('Data Fim (YYYY-MM-DD HH:MM:SS)', '2026-03-15 18:00:00')
-                    if st.form_submit_button('Salvar Sprint'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/sprints',
-                            json_body={
-                                'id_projeto': int(proj_sprint),
-                                'is_done': bool(is_done_sprint),
-                                'data_in': data_in.strip() or None,
-                                'data_fin': data_fin.strip() or None,
-                            },
+                elif tipo_insercao == 'Sprint':
+                    with st.form('form_sprint'):
+                        proj_sprint = st.selectbox(
+                            'Projeto',
+                            options=projects['id'].tolist(),
+                            format_func=lambda x: f'{project_names.get(x)} (ID: {x})',
                         )
-                        if ok:
-                            st.success('Sprint cadastrada com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar sprint: {err}')
+                        is_done_sprint = st.selectbox('Concluída?', [0, 1], format_func=lambda x: 'Sim' if x == 1 else 'Não')
+                        data_in = st.text_input('Data Início (YYYY-MM-DD HH:MM:SS)', '2026-03-01 08:00:00')
+                        data_fin = st.text_input('Data Fim (YYYY-MM-DD HH:MM:SS)', '2026-03-15 18:00:00')
+                        if st.form_submit_button('Salvar Sprint'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/sprints',
+                                json_body={
+                                    'id_projeto': int(proj_sprint),
+                                    'is_done': bool(is_done_sprint),
+                                    'data_in': data_in.strip() or None,
+                                    'data_fin': data_fin.strip() or None,
+                                },
+                            )
+                            if ok:
+                                st.success('Sprint cadastrada com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar sprint: {err}')
 
-            elif tipo_insercao == 'Tarefa':
-                with st.form('form_tarefa'):
-                    proj_id = st.selectbox(
-                        'Projeto',
-                        options=projects['id'].tolist(),
-                        format_func=lambda x: f'{project_names.get(x)} (ID: {x})',
-                    )
-                    sprints_df = all_data['sprints']
-                    sprint_id = st.selectbox(
-                        'Sprint (Opcional)',
-                        options=[None] + sprints_df['id'].tolist(),
-                        format_func=lambda x: 'Nenhuma (Backlog)' if x is None else f'Sprint ID {x}',
-                    )
-                    desc = st.text_area('Descrição da Tarefa')
-                    estado = st.selectbox('Estado', ['nao_iniciada', 'em_andamento', 'concluida'])
-                    if st.form_submit_button('Salvar Tarefa'):
-                        ok, _, err = api_request(
-                            'POST', API_URL, '/tarefas',
-                            json_body={
-                                'id_projeto': int(proj_id),
-                                'descricao': desc,
-                                'estado': estado,
-                                'id_sprint': int(sprint_id) if sprint_id is not None else None,
-                            },
+                elif tipo_insercao == 'Tarefa':
+                    with st.form('form_tarefa'):
+                        proj_id = st.selectbox(
+                            'Projeto',
+                            options=projects['id'].tolist(),
+                            format_func=lambda x: f'{project_names.get(x)} (ID: {x})',
                         )
-                        if ok:
-                            st.success('Tarefa cadastrada com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao cadastrar tarefa: {err}')
+                        sprints_df = all_data['sprints']
+                        sprint_id = st.selectbox(
+                            'Sprint (Opcional)',
+                            options=[None] + sprints_df['id'].tolist(),
+                            format_func=lambda x: 'Nenhuma (Backlog)' if x is None else f'Sprint ID {x}',
+                        )
+                        desc = st.text_area('Descrição da Tarefa')
+                        estado = st.selectbox('Estado', ['nao_iniciada', 'em_andamento', 'concluida'])
+                        if st.form_submit_button('Salvar Tarefa'):
+                            ok, _, err = api_request(
+                                'POST', API_URL, '/tarefas',
+                                json_body={
+                                    'id_projeto': int(proj_id),
+                                    'descricao': desc,
+                                    'estado': estado,
+                                    'id_sprint': int(sprint_id) if sprint_id is not None else None,
+                                },
+                            )
+                            if ok:
+                                st.success('Tarefa cadastrada com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao cadastrar tarefa: {err}')
 
-        elif acao_escolhida == 'Atualizar Estado de Tarefa':
-            with st.form('form_atualizar_tarefa'):
-                tarefas_df = all_data['tarefas']
-                tarefa_id_up = st.selectbox(
-                    'Selecione a Tarefa',
-                    options=tarefas_df['id'].tolist(),
-                    format_func=lambda x: f"[{x}] {tarefas_df.loc[tarefas_df['id'] == x, 'descricao'].values[0][:50]}...",
-                )
-                novo_estado = st.selectbox('Novo Estado', ['nao_iniciada', 'em_andamento', 'concluida'])
-                if st.form_submit_button('Atualizar Estado'):
-                    ok, _, err = api_request(
-                        'PATCH', API_URL, f'/tarefas/{int(tarefa_id_up)}/estado',
-                        json_body={'estado': novo_estado},
-                    )
-                    if ok:
-                        st.success('Estado da tarefa atualizado com sucesso!')
-                        clear_api_caches()
-                        st.rerun()
-                    else:
-                        st.error(f'Erro ao atualizar estado da tarefa: {err}')
-
-        elif acao_escolhida == 'Associar Tarefa a Sprint':
-            with st.form('form_associar_sprint'):
-                tarefas_df = all_data['tarefas']
-                t_id = st.selectbox(
-                    'Selecione a Tarefa',
-                    options=tarefas_df['id'].tolist(),
-                    format_func=lambda x: f"[{x}] {tarefas_df.loc[tarefas_df['id'] == x, 'descricao'].values[0][:50]}...",
-                )
-                s_id = st.selectbox(
-                    'Selecione a Sprint de Destino',
-                    options=all_data['sprints']['id'].tolist(),
-                    format_func=lambda x: f'Sprint ID: {x}',
-                )
-                if st.form_submit_button('Vincular a Sprint'):
-                    ok, _, err = api_request(
-                        'PATCH', API_URL, f'/tarefas/{int(t_id)}/sprint',
-                        json_body={'id_sprint': int(s_id)},
-                    )
-                    if ok:
-                        st.success('Tarefa associada à sprint com sucesso!')
-                        clear_api_caches()
-                        st.rerun()
-                    else:
-                        st.error(f'Erro ao associar tarefa à sprint: {err}')
-
-        elif acao_escolhida == 'Vincular Projeto a Cliente':
-            with st.form('form_vincular_demanda'):
-                projetos_df = all_data['projetos']
-                p_demanda = st.selectbox(
-                    'Projeto',
-                    options=projetos_df['id'].tolist(),
-                    format_func=lambda x: f"{projetos_df.loc[projetos_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                )
-                clientes_df = all_data['clientes']
-                c_demanda = st.selectbox(
-                    'Cliente',
-                    options=clientes_df['id'].tolist(),
-                    format_func=lambda x: f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]} (ID: {x})",
-                )
-                if st.form_submit_button('Criar Vínculo (Demanda)'):
-                    ok, _, err = api_request(
-                        'POST', API_URL, '/demandas',
-                        json_body={'id_projeto': int(p_demanda), 'id_cliente': int(c_demanda)},
-                    )
-                    if ok:
-                        st.success('Projeto vinculado ao cliente com sucesso!')
-                        clear_api_caches()
-                        st.rerun()
-                    else:
-                        st.error(f'Erro ao vincular projeto e cliente: {err}')
-
-    # --- ABA DE DELEÇÃO E DESVINCULAÇÃO ---
-    with tab_delete:
-        modo_delecao = st.selectbox(
-            'Selecione a ação de remoção',
-            ['Excluir Registro de Tabela', 'Desvincular Projeto de Cliente (Tabela Demanda)'],
-        )
-
-        if modo_delecao == 'Excluir Registro de Tabela':
-            opcao_deletar = st.selectbox('Selecione a entidade para remover', ['Tarefa', 'Sprint', 'Membro', 'Cliente', 'Projeto', 'Empresa'])
-
-            if opcao_deletar == 'Tarefa':
-                with st.form('form_del_tarefa'):
+            elif acao_escolhida == 'Atualizar Estado de Tarefa':
+                with st.form('form_atualizar_tarefa'):
                     tarefas_df = all_data['tarefas']
-                    tarefa_del_id = st.selectbox(
+                    tarefa_id_up = st.selectbox(
                         'Selecione a Tarefa',
                         options=tarefas_df['id'].tolist(),
                         format_func=lambda x: f"[{x}] {tarefas_df.loc[tarefas_df['id'] == x, 'descricao'].values[0][:50]}...",
                     )
-                    if st.form_submit_button('Excluir Tarefa'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/tarefas/{int(tarefa_del_id)}')
+                    novo_estado = st.selectbox('Novo Estado', ['nao_iniciada', 'em_andamento', 'concluida'])
+                    if st.form_submit_button('Atualizar Estado'):
+                        ok, _, err = api_request(
+                            'PATCH', API_URL, f'/tarefas/{int(tarefa_id_up)}/estado',
+                            json_body={'estado': novo_estado},
+                        )
                         if ok:
-                            st.warning('Tarefa removida com sucesso!')
+                            st.success('Estado da tarefa atualizado com sucesso!')
                             clear_api_caches()
                             st.rerun()
                         else:
-                            st.error(f'Erro ao remover tarefa: {err}')
+                            st.error(f'Erro ao atualizar estado da tarefa: {err}')
 
-            elif opcao_deletar == 'Sprint':
-                with st.form('form_del_sprint'):
-                    sprints_df = all_data['sprints']
-                    sprint_del_id = st.selectbox(
-                        'Selecione a Sprint',
-                        options=sprints_df['id'].tolist(),
-                        format_func=lambda x: f"Sprint ID {x} (Projeto ID: {sprints_df.loc[sprints_df['id'] == x, 'id_projeto'].values[0]})",
+            elif acao_escolhida == 'Associar Tarefa a Sprint':
+                with st.form('form_associar_sprint'):
+                    tarefas_df = all_data['tarefas']
+                    t_id = st.selectbox(
+                        'Selecione a Tarefa',
+                        options=tarefas_df['id'].tolist(),
+                        format_func=lambda x: f"[{x}] {tarefas_df.loc[tarefas_df['id'] == x, 'descricao'].values[0][:50]}...",
                     )
-                    if st.form_submit_button('Excluir Sprint'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/sprints/{int(sprint_del_id)}')
-                        if ok:
-                            st.warning('Sprint removida com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao remover sprint: {err}')
-
-            elif opcao_deletar == 'Membro':
-                with st.form('form_del_membro'):
-                    membros_df = all_data['membros']
-                    membro_del_id = st.selectbox(
-                        'Selecione o Membro',
-                        options=membros_df['id'].tolist(),
-                        format_func=lambda x: f"{membros_df.loc[membros_df['id'] == x, 'nome'].values[0]} ({membros_df.loc[membros_df['id'] == x, 'cargo'].values[0]})",
+                    s_id = st.selectbox(
+                        'Selecione a Sprint de Destino',
+                        options=all_data['sprints']['id'].tolist(),
+                        format_func=lambda x: f'Sprint ID: {x}',
                     )
-                    if st.form_submit_button('Excluir Membro'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/membros/{int(membro_del_id)}')
+                    if st.form_submit_button('Vincular a Sprint'):
+                        ok, _, err = api_request(
+                            'PATCH', API_URL, f'/tarefas/{int(t_id)}/sprint',
+                            json_body={'id_sprint': int(s_id)},
+                        )
                         if ok:
-                            st.warning('Membro removido com sucesso!')
+                            st.success('Tarefa associada à sprint com sucesso!')
                             clear_api_caches()
                             st.rerun()
                         else:
-                            st.error(f'Erro ao remover membro: {err}')
+                            st.error(f'Erro ao associar tarefa à sprint: {err}')
 
-            elif opcao_deletar == 'Cliente':
-                with st.form('form_del_cliente'):
-                    clientes_df = all_data['clientes']
-                    cliente_del_id = st.selectbox(
-                        'Selecione o Cliente',
-                        options=clientes_df['id'].tolist(),
-                        format_func=lambda x: f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]}",
-                    )
-                    if st.form_submit_button('Excluir Cliente'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/clientes/{int(cliente_del_id)}')
-                        if ok:
-                            st.warning('Cliente removido com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao remover cliente: {err}')
-
-            elif opcao_deletar == 'Projeto':
-                with st.form('form_del_projeto'):
+            elif acao_escolhida == 'Vincular Projeto a Cliente':
+                with st.form('form_vincular_demanda'):
                     projetos_df = all_data['projetos']
-                    proj_del_id = st.selectbox(
-                        'Selecione o Projeto',
+                    p_demanda = st.selectbox(
+                        'Projeto',
                         options=projetos_df['id'].tolist(),
                         format_func=lambda x: f"{projetos_df.loc[projetos_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                     )
-                    if st.form_submit_button('Excluir Projeto'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/projetos/{int(proj_del_id)}')
-                        if ok:
-                            st.warning('Projeto removido com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao remover projeto: {err}')
-
-            elif opcao_deletar == 'Empresa':
-                with st.form('form_del_empresa'):
-                    empresas_df = all_data['empresas']
-                    empresa_del_id = st.selectbox(
-                        'Selecione a Empresa',
-                        options=empresas_df['id'].tolist(),
-                        format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (Rep: {empresas_df.loc[empresas_df['id'] == x, 'rep'].values[0]})",
-                    )
-                    if st.form_submit_button('Excluir Empresa'):
-                        ok, _, err = api_request('DELETE', API_URL, f'/empresas/{int(empresa_del_id)}')
-                        if ok:
-                            st.warning('Empresa removida com sucesso!')
-                            clear_api_caches()
-                            st.rerun()
-                        else:
-                            st.error(f'Erro ao remover empresa: {err}')
-
-        elif modo_delecao == 'Desvincular Projeto de Cliente (Tabela Demanda)':
-            with st.form('form_desvincular_demanda'):
-                st.caption('Selecione um vínculo existente na tabela `demanda` para removê-lo:')
-                if demands.empty:
-                    st.info('Não há vínculos de demanda ativos no recorte atual.')
-                else:
-                    projetos_df = all_data['projetos']
                     clientes_df = all_data['clientes']
-
-                    def formatar_demanda(r):
-                        p_nome = projetos_df.loc[projetos_df['id'] == r.id_projeto, 'nome'].values
-                        c_nome = clientes_df.loc[clientes_df['id'] == r.id_cliente, 'nome'].values
-                        p_str = p_nome[0] if len(p_nome) > 0 else f'ID {r.id_projeto}'
-                        c_str = c_nome[0] if len(c_nome) > 0 else f'ID {r.id_cliente}'
-                        return f"Projeto: '{p_str}' ↔ Cliente: '{c_str}'"
-
-                    demanda_opcoes = [formatar_demanda(r) for r in demands.itertuples()]
-                    demanda_tuplas = [(int(r.id_projeto), int(r.id_cliente)) for r in demands.itertuples()]
-
-                    escolha_idx = st.selectbox(
-                        'Vínculo Projeto ↔ Cliente',
-                        options=range(len(demanda_opcoes)),
-                        format_func=lambda i: demanda_opcoes[i],
+                    c_demanda = st.selectbox(
+                        'Cliente',
+                        options=clientes_df['id'].tolist(),
+                        format_func=lambda x: f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]} (ID: {x})",
                     )
-
-                    if st.form_submit_button('Remover Vínculo'):
-                        p_id_sel, c_id_sel = demanda_tuplas[escolha_idx]
-                        ok, _, err = api_request('DELETE', API_URL, f'/demandas/{p_id_sel}/{c_id_sel}')
+                    if st.form_submit_button('Criar Vínculo (Demanda)'):
+                        ok, _, err = api_request(
+                            'POST', API_URL, '/demandas',
+                            json_body={'id_projeto': int(p_demanda), 'id_cliente': int(c_demanda)},
+                        )
                         if ok:
-                            st.warning('Vínculo removido com sucesso!')
+                            st.success('Projeto vinculado ao cliente com sucesso!')
                             clear_api_caches()
                             st.rerun()
                         else:
-                            st.error(f'Erro ao remover vínculo: {err}')
+                            st.error(f'Erro ao vincular projeto e cliente: {err}')
+
+            elif acao_escolhida == 'Definir / Alterar Senha de Usuário':
+                tipo_usr = st.radio('Tipo de conta', ['Membro', 'Cliente'], horizontal=True)
+                df_usr = all_data['membros'] if tipo_usr == 'Membro' else all_data['clientes']
+
+                with st.form('form_definir_senha'):
+                    if df_usr.empty:
+                        st.info(f'Nenhum {tipo_usr.lower()} cadastrado no momento.')
+                        st.form_submit_button('Salvar Senha', disabled=True)
+                    else:
+                        usr_id = st.selectbox(
+                            f'Selecione o {tipo_usr}',
+                            options=df_usr['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{df_usr.loc[df_usr['id'] == x, 'nome'].values[0]} "
+                                f"({df_usr.loc[df_usr['id'] == x, 'email'].values[0]})"
+                            ),
+                        )
+                        nova_senha = st.text_input('Nova Senha', type='password')
+                        confirmar_senha = st.text_input('Confirmar Nova Senha', type='password')
+
+                        if st.form_submit_button('Salvar Senha', type='primary'):
+                            if not nova_senha:
+                                st.error('A senha não pode ficar em branco.')
+                            elif nova_senha != confirmar_senha:
+                                st.error('As senhas digitadas não coincidem.')
+                            else:
+                                chave_tipo = 'membro' if tipo_usr == 'Membro' else 'cliente'
+                                ok, _, err = api_request(
+                                    'PATCH',
+                                    API_URL,
+                                    f'/auth/senhas/{chave_tipo}/{int(usr_id)}',
+                                    json_body={'nova_senha': nova_senha},
+                                )
+                                if ok:
+                                    st.success(f'Senha definida com sucesso para o {tipo_usr.lower()}!')
+                                    clear_api_caches()
+                                    st.rerun()
+                                else:
+                                    st.error(f'Erro ao salvar a senha: {err}')
+
+        # --- ABA DE DELEÇÃO E DESVINCULAÇÃO ---
+        with tab_delete:
+            modo_delecao = st.selectbox(
+                'Selecione a ação de remoção',
+                [
+                    'Excluir Registro de Tabela',
+                    'Desvincular Projeto de Cliente (Tabela Demanda)',
+                    'Remover Senha de Usuário (Revogar Acesso)',
+                ],
+            )
+
+            if modo_delecao == 'Excluir Registro de Tabela':
+                opcao_deletar = st.selectbox('Selecione a entidade para remover', ['Tarefa', 'Sprint', 'Membro', 'Cliente', 'Projeto', 'Empresa'])
+
+                if opcao_deletar == 'Tarefa':
+                    with st.form('form_del_tarefa'):
+                        tarefas_df = all_data['tarefas']
+                        tarefa_del_id = st.selectbox(
+                            'Selecione a Tarefa',
+                            options=tarefas_df['id'].tolist(),
+                            format_func=lambda x: f"[{x}] {tarefas_df.loc[tarefas_df['id'] == x, 'descricao'].values[0][:50]}...",
+                        )
+                        if st.form_submit_button('Excluir Tarefa'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/tarefas/{int(tarefa_del_id)}')
+                            if ok:
+                                st.warning('Tarefa removida com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover tarefa: {err}')
+
+                elif opcao_deletar == 'Sprint':
+                    with st.form('form_del_sprint'):
+                        sprints_df = all_data['sprints']
+                        sprint_del_id = st.selectbox(
+                            'Selecione a Sprint',
+                            options=sprints_df['id'].tolist(),
+                            format_func=lambda x: f"Sprint ID {x} (Projeto ID: {sprints_df.loc[sprints_df['id'] == x, 'id_projeto'].values[0]})",
+                        )
+                        if st.form_submit_button('Excluir Sprint'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/sprints/{int(sprint_del_id)}')
+                            if ok:
+                                st.warning('Sprint removida com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover sprint: {err}')
+
+                elif opcao_deletar == 'Membro':
+                    with st.form('form_del_membro'):
+                        membros_df = all_data['membros']
+                        membro_del_id = st.selectbox(
+                            'Selecione o Membro',
+                            options=membros_df['id'].tolist(),
+                            format_func=lambda x: f"{membros_df.loc[membros_df['id'] == x, 'nome'].values[0]} ({membros_df.loc[membros_df['id'] == x, 'cargo'].values[0]})",
+                        )
+                        if st.form_submit_button('Excluir Membro'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/membros/{int(membro_del_id)}')
+                            if ok:
+                                st.warning('Membro removido com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover membro: {err}')
+
+                elif opcao_deletar == 'Cliente':
+                    with st.form('form_del_cliente'):
+                        clientes_df = all_data['clientes']
+                        cliente_del_id = st.selectbox(
+                            'Selecione o Cliente',
+                            options=clientes_df['id'].tolist(),
+                            format_func=lambda x: f"{clientes_df.loc[clientes_df['id'] == x, 'nome'].values[0]}",
+                        )
+                        if st.form_submit_button('Excluir Cliente'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/clientes/{int(cliente_del_id)}')
+                            if ok:
+                                st.warning('Cliente removido com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover cliente: {err}')
+
+                elif opcao_deletar == 'Projeto':
+                    with st.form('form_del_projeto'):
+                        projetos_df = all_data['projetos']
+                        proj_del_id = st.selectbox(
+                            'Selecione o Projeto',
+                            options=projetos_df['id'].tolist(),
+                            format_func=lambda x: f"{projetos_df.loc[projetos_df['id'] == x, 'nome'].values[0]} (ID: {x})",
+                        )
+                        if st.form_submit_button('Excluir Projeto'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/projetos/{int(proj_del_id)}')
+                            if ok:
+                                st.warning('Projeto removido com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover projeto: {err}')
+
+                elif opcao_deletar == 'Empresa':
+                    with st.form('form_del_empresa'):
+                        empresas_df = all_data['empresas']
+                        empresa_del_id = st.selectbox(
+                            'Selecione a Empresa',
+                            options=empresas_df['id'].tolist(),
+                            format_func=lambda x: f"{empresas_df.loc[empresas_df['id'] == x, 'nome'].values[0]} (Rep: {empresas_df.loc[empresas_df['id'] == x, 'rep'].values[0]})",
+                        )
+                        if st.form_submit_button('Excluir Empresa'):
+                            ok, _, err = api_request('DELETE', API_URL, f'/empresas/{int(empresa_del_id)}')
+                            if ok:
+                                st.warning('Empresa removida com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover empresa: {err}')
+
+            elif modo_delecao == 'Remover Senha de Usuário (Revogar Acesso)':
+                st.caption('Remove a senha cadastrada do usuário, impedindo o login sem excluir seu registro.')
+                tipo_usr_del = st.radio('Tipo de conta', ['Membro', 'Cliente'], horizontal=True, key='radio_del_senha')
+                df_usr = all_data['membros'] if tipo_usr_del == 'Membro' else all_data['clientes']
+
+                with st.form('form_remover_senha'):
+                    if 'possui_senha' in df_usr.columns:
+                        df_com_senha = df_usr[df_usr['possui_senha'].fillna(False).astype(bool)]
+                    elif 'senha' in df_usr.columns:
+                        df_com_senha = df_usr[df_usr['senha'].fillna('') != '']
+                    else:
+                        df_com_senha = df_usr
+
+                    if df_com_senha.empty:
+                        st.info(f'Nenhum {tipo_usr_del.lower()} possui senha cadastrada no momento.')
+                        st.form_submit_button('Remover Senha', disabled=True)
+                    else:
+                        usr_del_id = st.selectbox(
+                            f'Selecione o {tipo_usr_del}',
+                            options=df_com_senha['id'].tolist(),
+                            format_func=lambda x: (
+                                f"{df_com_senha.loc[df_com_senha['id'] == x, 'nome'].values[0]} "
+                                f"({df_com_senha.loc[df_com_senha['id'] == x, 'email'].values[0]})"
+                            ),
+                        )
+                        if st.form_submit_button('Remover Senha'):
+                            if tipo_usr_del == 'Membro' and int(usr_del_id) == int(usuario['id']):
+                                st.error('Você não pode remover a senha da sua própria conta enquanto está logado.')
+                            else:
+                                chave_tipo = 'membro' if tipo_usr_del == 'Membro' else 'cliente'
+                                ok, _, err = api_request(
+                                    'DELETE',
+                                    API_URL,
+                                    f'/auth/senhas/{chave_tipo}/{int(usr_del_id)}',
+                                )
+                                if ok:
+                                    st.warning(f'Senha removida! O {tipo_usr_del.lower()} não poderá mais fazer login.')
+                                    clear_api_caches()
+                                    st.rerun()
+                                else:
+                                    st.error(f'Erro ao remover a senha: {err}')
+
+            elif modo_delecao == 'Desvincular Projeto de Cliente (Tabela Demanda)':
+                with st.form('form_desvincular_demanda'):
+                    st.caption('Selecione um vínculo existente na tabela `demanda` para removê-lo:')
+                    if demands.empty:
+                        st.info('Não há vínculos de demanda ativos no recorte atual.')
+                    else:
+                        projetos_df = all_data['projetos']
+                        clientes_df = all_data['clientes']
+
+                        def formatar_demanda(r):
+                            p_nome = projetos_df.loc[projetos_df['id'] == r.id_projeto, 'nome'].values
+                            c_nome = clientes_df.loc[clientes_df['id'] == r.id_cliente, 'nome'].values
+                            p_str = p_nome[0] if len(p_nome) > 0 else f'ID {r.id_projeto}'
+                            c_str = c_nome[0] if len(c_nome) > 0 else f'ID {r.id_cliente}'
+                            return f"Projeto: '{p_str}' ↔ Cliente: '{c_str}'"
+
+                        demanda_opcoes = [formatar_demanda(r) for r in demands.itertuples()]
+                        demanda_tuplas = [(int(r.id_projeto), int(r.id_cliente)) for r in demands.itertuples()]
+
+                        escolha_idx = st.selectbox(
+                            'Vínculo Projeto ↔ Cliente',
+                            options=range(len(demanda_opcoes)),
+                            format_func=lambda i: demanda_opcoes[i],
+                        )
+
+                        if st.form_submit_button('Remover Vínculo'):
+                            p_id_sel, c_id_sel = demanda_tuplas[escolha_idx]
+                            ok, _, err = api_request('DELETE', API_URL, f'/demandas/{p_id_sel}/{c_id_sel}')
+                            if ok:
+                                st.warning('Vínculo removido com sucesso!')
+                                clear_api_caches()
+                                st.rerun()
+                            else:
+                                st.error(f'Erro ao remover vínculo: {err}')
 
 st.divider()
 st.caption(f'◆ EJFlow · Observatório de Projetos | API: `{API_URL}` | MySQL: `{db_name}` | painel interativo · © projeto acadêmico')

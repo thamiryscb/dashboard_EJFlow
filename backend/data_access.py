@@ -1,6 +1,7 @@
 """Camada de acesso a dados (leitura, análise e escrita) para as tabelas MySQL do EJFlow."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import pandas as pd
@@ -462,3 +463,76 @@ def desvincular_projeto_cliente(config, id_projeto, id_cliente):
     """Remove a associação entre um projeto e um cliente na tabela demanda."""
     query = 'DELETE FROM {table} WHERE id_projeto = %s AND id_cliente = %s;'
     return execute_command(config, query, (id_projeto, id_cliente), table='demanda')
+
+
+# ==========================================
+# FUNÇÕES DE AUTENTICAÇÃO E SENHAS
+# ==========================================
+
+def criptografar_em_hash(texto) -> str:
+    """Retorna o hash SHA-256 em hexadecimal do texto informado."""
+    return hashlib.sha256(str(texto).encode('utf-8')).hexdigest()
+
+
+Criptografar_Em_Hash = criptografar_em_hash
+
+
+def autenticar_usuario(config, email, senha):
+    """Verifica credenciais comparando o hash SHA-256 da senha digitada com o banco."""
+    if not email or not senha:
+        return None
+
+    senha_hash = criptografar_em_hash(senha)
+
+    membro = fetch_query(
+        config,
+        "SELECT id, id_empresa, nome, email, cargo FROM {table} "
+        "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
+        (email, senha_hash),
+        fetchone=True,
+        table='membros',
+    )
+    if membro:
+        membro['tipo'] = 'membro'
+        return membro
+
+    cliente = fetch_query(
+        config,
+        "SELECT id, nome, email FROM {table} "
+        "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
+        (email, senha_hash),
+        fetchone=True,
+        table='clientes',
+    )
+    if cliente:
+        cliente['tipo'] = 'cliente'
+        return cliente
+
+    return None
+
+
+def definir_senha_usuario(config, tipo_usuario, id_usuario, nova_senha):
+    """Criptografa a nova senha em SHA-256 e salva na tabela 'membros' ou 'clientes'."""
+    if tipo_usuario not in ('membro', 'cliente') or not nova_senha:
+        return False
+    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
+    senha_hash = criptografar_em_hash(nova_senha)
+    return execute_command(
+        config,
+        'UPDATE {table} SET senha = %s WHERE id = %s;',
+        (senha_hash, id_usuario),
+        table=tabela,
+    )
+
+
+def remover_senha_usuario(config, tipo_usuario, id_usuario):
+    """Remove a senha (define como '') revogando o login do 'membro' ou 'cliente'."""
+    if tipo_usuario not in ('membro', 'cliente'):
+        return False
+    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
+    return execute_command(
+        config,
+        "UPDATE {table} SET senha = '' WHERE id = %s;",
+        (id_usuario,),
+        table=tabela,
+    )

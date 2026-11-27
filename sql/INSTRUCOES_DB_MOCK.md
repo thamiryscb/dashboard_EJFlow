@@ -108,3 +108,12 @@ O Streamlit ([`frontend/app.py`](frontend/app.py)) consulta a API pelo lado do s
 1. **CORS não bloqueia** chamadas servidor-para-servidor feitas pelo Streamlit — ele atua em requisições originadas pelo navegador (ou em testes de preflight `OPTIONS`).
 2. **Rodar em Docker não impede** a comunicação entre `frontend` e `backend`, desde que o `frontend` use o nome do serviço (`http://backend:8000`) em vez de `localhost:8000`.
 3. Se o painel exibir *"API do EJFlow indisponível"*, verifique os logs do backend (`docker compose logs --tail=50 backend`): na maioria das vezes o erro é no banco de dados (por exemplo, tabelas ainda não criadas) gerando HTTP `500` na rota `/dados`.
+
+---
+
+## 6. Credenciais iniciais de acesso (dados mockados)
+
+O script [`sql/init_mock_data.sql`](sql/init_mock_data.sql) cria a coluna `senha` (hash SHA-256) em `membros` e `clientes` e define uma senha inicial apenas para os registros de ID `1`:
+
+- **Perfil Membro (acesso completo):** `joao.pedro@techsolutions.com` / senha: `Senha`
+- **Perfil Cliente (visão restrita):** `contato@alpha.com` / senha: `Senha`

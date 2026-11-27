@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS clientes (
     nome VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     id_empresa INT NOT NULL,
+    senha VARCHAR(255) NOT NULL DEFAULT '',
     CONSTRAINT chk_email_formato CHECK (
         email REGEXP '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'
     ),
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS membros (
     nome VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL,
     cargo VARCHAR(100) NOT NULL,
+    senha VARCHAR(255) NOT NULL DEFAULT '',
     CONSTRAINT fk_membro_empresa FOREIGN KEY (id_empresa)
         REFERENCES empresas(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -91,6 +93,33 @@ CREATE TABLE IF NOT EXISTS tarefas (
         REFERENCES projetos(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Migração idempotente da coluna 'senha' para bancos/volumes já existentes
+SET @col_clientes := (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'clientes' AND COLUMN_NAME = 'senha'
+);
+SET @sql_clientes := IF(
+    @col_clientes = 0,
+    "ALTER TABLE clientes ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT ''",
+    'SELECT 1'
+);
+PREPARE stmt_clientes FROM @sql_clientes;
+EXECUTE stmt_clientes;
+DEALLOCATE PREPARE stmt_clientes;
+
+SET @col_membros := (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'membros' AND COLUMN_NAME = 'senha'
+);
+SET @sql_membros := IF(
+    @col_membros = 0,
+    "ALTER TABLE membros ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT ''",
+    'SELECT 1'
+);
+PREPARE stmt_membros FROM @sql_membros;
+EXECUTE stmt_membros;
+DEALLOCATE PREPARE stmt_membros;
+
 -- ============================================================================
 -- DADOS MOCKADOS (idempotentes com INSERT IGNORE)
 -- ============================================================================
@@ -100,11 +129,11 @@ INSERT IGNORE INTO empresas (id, nome, rep) VALUES
 (2, 'Inovação & Futuro S.A.', 'Ana Souza'),
 (3, 'Global Logistics Corp', 'Marcos Oliveira');
 
-INSERT IGNORE INTO clientes (id, nome, email, id_empresa) VALUES
-(1, 'Empresa Parceira Alpha', 'contato@alpha.com', 1),
-(2, 'Varejo Norte Express', 'projetos@varejonorte.com.br', 1),
-(3, 'Consultoria Beta Corp', 'suporte@betacorp.com.br', 2),
-(4, 'Comércio Gama', 'comercial@gama.net', 3);
+INSERT IGNORE INTO clientes (id, nome, email, id_empresa, senha) VALUES
+(1, 'Empresa Parceira Alpha', 'contato@alpha.com', 1, 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'),
+(2, 'Varejo Norte Express', 'projetos@varejonorte.com.br', 1, ''),
+(3, 'Consultoria Beta Corp', 'suporte@betacorp.com.br', 2, ''),
+(4, 'Comércio Gama', 'comercial@gama.net', 3, '');
 
 INSERT IGNORE INTO projetos (id, id_empresa, nome, descricao) VALUES
 (101, 1, 'Sistema de E-commerce', 'Desenvolvimento de plataforma de vendas online com integração de pagamentos.'),
@@ -112,13 +141,22 @@ INSERT IGNORE INTO projetos (id, id_empresa, nome, descricao) VALUES
 (103, 2, 'Portal de RH Interno', 'Sistema web para gestão de férias, holerites e benefícios dos funcionários.'),
 (104, 3, 'Dashboard de Logística', 'Painel analítico para monitoramento da frota e custos de frete.');
 
-INSERT IGNORE INTO membros (id, id_empresa, nome, email, cargo) VALUES
-(1, 1, 'João Pedro', 'joao.pedro@techsolutions.com', 'Desenvolvedor Full Stack'),
-(2, 1, 'Mariana Lima', 'mariana.lima@techsolutions.com', 'Product Owner'),
-(3, 1, 'Rafael Costa', 'rafael.costa@techsolutions.com', 'Engenheiro de QA'),
-(4, 2, 'Lucas Mendes', 'lucas.mendes@inovacao.com', 'Arquiteto de Software'),
-(5, 2, 'Camila Ferreira', 'camila.ferreira@inovacao.com', 'UX/UI Designer'),
-(6, 3, 'Beatriz Costa', 'beatriz.costa@global.com', 'Analista de Dados');
+INSERT IGNORE INTO membros (id, id_empresa, nome, email, cargo, senha) VALUES
+(1, 1, 'João Pedro', 'joao.pedro@techsolutions.com', 'Desenvolvedor Full Stack', 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'),
+(2, 1, 'Mariana Lima', 'mariana.lima@techsolutions.com', 'Product Owner', ''),
+(3, 1, 'Rafael Costa', 'rafael.costa@techsolutions.com', 'Engenheiro de QA', ''),
+(4, 2, 'Lucas Mendes', 'lucas.mendes@inovacao.com', 'Arquiteto de Software', ''),
+(5, 2, 'Camila Ferreira', 'camila.ferreira@inovacao.com', 'UX/UI Designer', ''),
+(6, 3, 'Beatriz Costa', 'beatriz.costa@global.com', 'Analista de Dados', '');
+
+-- Garante senha inicial ('Senha') no cliente e membro ID 1 caso já existam sem senha
+UPDATE clientes
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1 AND senha = '';
+
+UPDATE membros
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1 AND senha = '';
 
 INSERT IGNORE INTO demanda (id_projeto, id_cliente) VALUES
 (101, 1),

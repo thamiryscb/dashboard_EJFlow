@@ -115,6 +115,25 @@ INSERT INTO TAREFAS (id_projeto, id_sprint, estado, descricao, data_cria, data_f
 (102, 3, 'em_andamento', 'Criar wireframes das telas principais do aplicativo', '2026-03-05 08:30:00', NULL),
 (103, 4, 'concluida', 'Mapear requisitos de regras de negócio de férias', '2026-02-10 09:00:00', '2026-02-15 16:00:00');
 
+
+
+-- Adiciona a coluna das senhas em clientes e membros
+ALTER TABLE clientes
+ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT '';
+
+ALTER TABLE membros
+ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT '';
+
+-- 2. Define a senha apenas para o cliente e o membro de ID 1
+UPDATE clientes
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1;
+
+UPDATE membros
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1;
+
+
 -- DESENVOLVER CONSULTAS COM JOIN, FILTROS E AGREGAÇÕES. 
 -- ASSOCIAR O PROJETO AO CLIENTE
 SELECT * FROM projetos 

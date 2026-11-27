@@ -21,6 +21,7 @@ except ImportError:
 
 
 EstadoTarefa = Literal['nao_iniciada', 'em_andamento', 'concluida']
+TipoUsuario = Literal['membro', 'cliente']
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,24 @@ class QualidadeItem(BaseModel):
     ocorrencias: int
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=1, max_length=255)
+    senha: str = Field(..., min_length=1, max_length=255)
+
+
+class UsuarioAutenticado(BaseModel):
+    id: int
+    nome: str
+    email: str
+    tipo: TipoUsuario
+    id_empresa: Optional[int] = None
+    cargo: Optional[str] = None
+
+
+class DefinirSenhaRequest(BaseModel):
+    nova_senha: str = Field(..., min_length=1, max_length=255)
+
+
 # ---------------------------------------------------------------------------
 # Utilitários de serialização e conexão
 # ---------------------------------------------------------------------------
@@ -170,6 +189,16 @@ def _serialize_value(value: Any) -> Any:
 def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     records = df.to_dict(orient='records')
     return [{k: _serialize_value(v) for k, v in row.items()} for row in records]
+
+
+def _sanitize_user_dataframe(df: pd.DataFrame, include_flag: bool = True) -> pd.DataFrame:
+    """Remove a coluna de hash de senha antes de expor tabelas pela API."""
+    frame = df.copy()
+    if 'senha' in frame.columns:
+        if include_flag:
+            frame['possui_senha'] = frame['senha'].fillna('').astype(str).str.strip().ne('')
+        frame = frame.drop(columns=['senha'])
+    return frame
 
 
 def db_configs() -> dict[str, Any]:
@@ -231,6 +260,72 @@ app.add_middleware(
 @app.get('/health', tags=['Sistema'], summary='Verificação de saúde da API.')
 def healthcheck():
     return {'status': 'ok'}
+
+
+# ---------------------------------------------------------------------------
+# AUTENTICAÇÃO E GESTÃO DE SENHAS
+# ---------------------------------------------------------------------------
+
+def _verificar_usuario_existente(db: Any, tipo_usuario: TipoUsuario, usuario_id: int) -> None:
+    registro = da.obter_membro(db, usuario_id) if tipo_usuario == 'membro' else da.obter_cliente(db, usuario_id)
+    if registro is None:
+        label = 'Membro' if tipo_usuario == 'membro' else 'Cliente'
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'{label} {usuario_id} não encontrado.',
+        )
+
+
+@app.post(
+    '/auth/login',
+    response_model=UsuarioAutenticado,
+    tags=['Autenticação'],
+    summary='Autenticar usuário (membro ou cliente).',
+)
+def login_usuario(payload: LoginRequest, db=Depends(get_db)):
+    usuario = da.autenticar_usuario(db, payload.email, payload.senha)
+    if usuario is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='E-mail ou senha inválidos.',
+        )
+    return usuario
+
+
+@app.patch(
+    '/auth/senhas/{tipo_usuario}/{usuario_id}',
+    response_model=MensagemResposta,
+    tags=['Autenticação'],
+    summary='Definir ou alterar a senha de um usuário.',
+)
+def definir_senha(
+    tipo_usuario: TipoUsuario,
+    usuario_id: int,
+    payload: DefinirSenhaRequest,
+    db=Depends(get_db),
+):
+    _verificar_usuario_existente(db, tipo_usuario, usuario_id)
+    if not da.definir_senha_usuario(db, tipo_usuario, usuario_id, payload.nova_senha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Não foi possível salvar a senha no banco de dados.',
+        )
+    return MensagemResposta(mensagem=f'Senha definida com sucesso para o {tipo_usuario}.')
+
+
+@app.delete(
+    '/auth/senhas/{tipo_usuario}/{usuario_id}',
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=['Autenticação'],
+    summary='Remover a senha de um usuário (revogar acesso).',
+)
+def revogar_senha(tipo_usuario: TipoUsuario, usuario_id: int, db=Depends(get_db)):
+    _verificar_usuario_existente(db, tipo_usuario, usuario_id)
+    if not da.remover_senha_usuario(db, tipo_usuario, usuario_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Não foi possível remover a senha do usuário.',
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +435,15 @@ def listar_demandas(
 def obter_todos_os_dados(db=Depends(get_db)):
     raw, columns, about = da.fetch_all(db)
     normalized = da.normalize(raw)
+    sanitized_columns = {k: set(v) for k, v in columns.items()}
+    for table_name in ('clientes', 'membros'):
+        if 'senha' in normalized[table_name].columns:
+            normalized[table_name] = _sanitize_user_dataframe(normalized[table_name], include_flag=True)
+            sanitized_columns[table_name].discard('senha')
+            sanitized_columns[table_name].add('possui_senha')
     return {
         'about': about,
-        'columns': {k: sorted(v) for k, v in columns.items()},
+        'columns': {k: sorted(v) for k, v in sanitized_columns.items()},
         'tables': {k: _df_to_records(df) for k, df in normalized.items()},
     }
 
@@ -362,6 +463,8 @@ def obter_analytics(
         project_ids=project_ids,
         task_status=task_status,
     )
+    for key in ('clients', 'members'):
+        analytics[key] = _sanitize_user_dataframe(analytics[key], include_flag=False)
     return {k: _df_to_records(df) for k, df in analytics.items()}
 
 
