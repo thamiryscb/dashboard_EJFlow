@@ -113,7 +113,15 @@ O Streamlit ([`frontend/app.py`](frontend/app.py)) consulta a API pelo lado do s
 
 ## 6. Credenciais iniciais de acesso (dados mockados)
 
-O script [`sql/init_mock_data.sql`](sql/init_mock_data.sql) cria a coluna `senha` (hash SHA-256) em `membros` e `clientes` e define uma senha inicial apenas para os registros de ID `1`:
+O script [`sql/init_mock_data.sql`](sql/init_mock_data.sql) habilita um conjunto completo de usuários para testar todos os perfis e cenários (senha padrão: `Senha`):
 
-- **Perfil Membro (acesso completo):** `joao.pedro@techsolutions.com` / senha: `Senha`
-- **Perfil Cliente (visão restrita):** `contato@alpha.com` / senha: `Senha`
+| Perfil | E-mail | Senha | Escopo / O que testar |
+|---|---|---|---|
+| **Admin** | `admin@ejflow.com` | `Senha` | Manutenção completa do servidor (todas as empresas, projetos, tabelas, perfis e admins) |
+| **Chefe (Emp. 1)** | `mariana.lima@techsolutions.com` | `Senha` | Tech Solutions Ltda (projetos 101 e 102, membros 1–3); criar projetos/membros da empresa 1 |
+| **Chefe (Emp. 2)** | `lucas.mendes@inovacao.com` | `Senha` | Inovação & Futuro S.A. (projeto 103, membros 4–5); isolamento entre empresas |
+| **Membro (Emp. 1)** | `joao.pedro@techsolutions.com` | `Senha` | Empresa 1, somente projeto 101 e tarefas 1–3; pode atualizar o estado das próprias tarefas |
+| **Membro (Emp. 1)** | `rafael.costa@techsolutions.com` | `Senha` | Empresa 1, projetos 101 e 102 e tarefas 4–7; comparação entre membros da mesma empresa |
+| **Cliente (Emp. 1)** | `contato@alpha.com` | `Senha` | Apenas índices qualitativos dos projetos 101 e 102 |
+| **Cliente (Emp. 2)** | `suporte@betacorp.com.br` | `Senha` | Apenas índices qualitativos do projeto 103 |
+| **Sem senha** | `camila.ferreira@inovacao.com` / `projetos@varejonorte.com.br` | *(vazia)* | Testar definição de senha e bloqueio antes de definir senha |

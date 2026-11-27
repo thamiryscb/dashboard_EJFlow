@@ -7,6 +7,10 @@ import re
 import pandas as pd
 
 TABLES = ('empresas', 'clientes', 'projetos', 'membros', 'demanda', 'sprints', 'tarefas')
+OPTIONAL_TABLES = {
+    'membro_projeto': ['id_projeto', 'id_membro'],
+    'admins': ['id', 'nome', 'email', 'senha'],
+}
 REQUIRED = {
     'empresas': {'id', 'nome', 'rep'},
     'clientes': {'id', 'nome', 'email'},
@@ -115,6 +119,22 @@ def fetch_all(config):
                     raise RuntimeError(f"A tabela '{table}' não tem as colunas esperadas: {', '.join(sorted(missing))}")
                 cursor.execute(f'SELECT * FROM {db}.{validate_name(physical_name)}')
                 result[table] = pd.DataFrame(cursor.fetchall(), columns=[c[0] for c in cursor.description])
+            for table, default_cols in OPTIONAL_TABLES.items():
+                cursor.execute(
+                    'SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS '
+                    'WHERE TABLE_SCHEMA = %s AND LOWER(TABLE_NAME) = %s',
+                    (database, table.lower()),
+                )
+                metadata = cursor.fetchall()
+                physical_names = {r['TABLE_NAME'] for r in metadata}
+                if not physical_names:
+                    columns[table] = set(default_cols)
+                    result[table] = pd.DataFrame(columns=default_cols)
+                    continue
+                physical_name = table if table in physical_names else next(iter(physical_names))
+                columns[table] = {r['COLUMN_NAME'] for r in metadata if r['TABLE_NAME'] == physical_name}
+                cursor.execute(f'SELECT * FROM {db}.{validate_name(physical_name)}')
+                result[table] = pd.DataFrame(cursor.fetchall(), columns=[c[0] for c in cursor.description])
             return result, columns, about
         finally:
             cursor.close()
@@ -141,16 +161,22 @@ def fetch_query(config, query, params=None, fetchone=False, table=None):
 def normalize(raw):
     """Preserva a cardinalidade original e cria chaves auxiliares para filtros."""
     d = {k: v.copy() for k, v in raw.items()}
-    for name in ('empresas', 'clientes', 'projetos', 'membros', 'sprints', 'tarefas'):
+    for opt_table, default_cols in OPTIONAL_TABLES.items():
+        if opt_table not in d:
+            d[opt_table] = pd.DataFrame(columns=default_cols)
+    for name in ('empresas', 'clientes', 'projetos', 'membros', 'sprints', 'tarefas', 'admins'):
         if 'id' in d[name]:
             d[name]['id'] = pd.to_numeric(d[name]['id'], errors='coerce').astype('Int64')
     for name, col in [
         ('projetos', 'id_empresa'), ('membros', 'id_empresa'), ('clientes', 'id_empresa'),
         ('sprints', 'id_projeto'), ('tarefas', 'id_projeto'), ('tarefas', 'id_sprint'),
-        ('demanda', 'id_projeto'), ('demanda', 'id_cliente'),
+        ('tarefas', 'id_membro'), ('demanda', 'id_projeto'), ('demanda', 'id_cliente'),
+        ('membro_projeto', 'id_projeto'), ('membro_projeto', 'id_membro'),
     ]:
         if col in d[name]:
             d[name][col] = pd.to_numeric(d[name][col], errors='coerce').astype('Int64')
+    if 'id_membro' not in d['tarefas'].columns:
+        d['tarefas']['id_membro'] = pd.Series(pd.NA, index=d['tarefas'].index, dtype='Int64')
     for name in ('tarefas', 'sprints'):
         for col in (('data_cria', 'data_fin') if name == 'tarefas' else ('data_in', 'data_fin')):
             d[name][col] = pd.to_datetime(d[name][col], errors='coerce')
@@ -158,8 +184,15 @@ def normalize(raw):
         d['sprints']['isDone'] = pd.to_numeric(d['sprints']['isDone'], errors='coerce')
     for c in ('nome', 'rep'):
         d['empresas'][c] = d['empresas'][c].fillna('').astype(str)
-    for name in ('projetos', 'clientes', 'membros'):
-        d[name]['nome'] = d[name]['nome'].fillna('').astype(str)
+    for name in ('projetos', 'clientes', 'membros', 'admins'):
+        if 'nome' in d[name]:
+            d[name]['nome'] = d[name]['nome'].fillna('').astype(str)
+    if 'email' in d['admins']:
+        d['admins']['email'] = d['admins']['email'].fillna('').astype(str)
+    if 'perfil' in d['membros'].columns:
+        d['membros']['perfil'] = d['membros']['perfil'].fillna('membro').astype(str)
+    else:
+        d['membros']['perfil'] = 'membro'
     d['tarefas']['estado'] = d['tarefas']['estado'].fillna('nao_informado').astype(str)
     return d
 
@@ -259,6 +292,83 @@ def data_quality(d):
         conflicts = owners.notna() & contracted.notna() & owners.ne(contracted)
         checks.append(('Demandas fora da empresa cadastrada para o cliente', int(conflicts.sum())))
     return checks
+
+
+def qualidade_cliente(d):
+    """Auditoria qualitativa restrita aos projetos vinculados ao cliente."""
+    excluded = {
+        'Projetos sem empresa válida',
+        'Clientes sem demanda associada',
+        'Demandas fora da empresa cadastrada para o cliente',
+    }
+    return [(nome, qtd) for nome, qtd in data_quality(d) if nome not in excluded]
+
+
+def filtrar_dados_por_usuario(d: dict[str, pd.DataFrame], usuario: dict | None) -> dict[str, pd.DataFrame]:
+    """Restringe todas as tabelas normalizadas de acordo com o perfil do usuário autenticado."""
+    filtered = {k: v.copy() for k, v in d.items()}
+    if usuario is None or usuario.get('tipo') == 'admin':
+        return filtered
+
+    tipo = usuario.get('tipo')
+    uid = usuario.get('id')
+    mp = filtered.get('membro_projeto', pd.DataFrame(columns=['id_projeto', 'id_membro']))
+    filtered['admins'] = filtered['admins'].iloc[0:0].copy() if 'admins' in filtered else pd.DataFrame(columns=['id', 'nome', 'email', 'senha'])
+
+    if tipo == 'chefe':
+        emp_id = usuario.get('id_empresa')
+        filtered['empresas'] = filtered['empresas'][filtered['empresas']['id'] == emp_id].copy()
+        filtered['projetos'] = filtered['projetos'][filtered['projetos']['id_empresa'] == emp_id].copy()
+        p_ids = filtered['projetos']['id'].dropna().tolist()
+        filtered['membros'] = filtered['membros'][filtered['membros']['id_empresa'] == emp_id].copy()
+        filtered['sprints'] = filtered['sprints'][filtered['sprints']['id_projeto'].isin(p_ids)].copy()
+        filtered['tarefas'] = filtered['tarefas'][filtered['tarefas']['id_projeto'].isin(p_ids)].copy()
+        filtered['demanda'] = filtered['demanda'][filtered['demanda']['id_projeto'].isin(p_ids)].copy()
+        cli_ids = set(filtered['demanda']['id_cliente'].dropna().tolist())
+        if 'id_empresa' in filtered['clientes'].columns:
+            mask_cli = (filtered['clientes']['id_empresa'] == emp_id) | (filtered['clientes']['id'].isin(cli_ids))
+            filtered['clientes'] = filtered['clientes'][mask_cli].copy()
+        else:
+            filtered['clientes'] = filtered['clientes'][filtered['clientes']['id'].isin(cli_ids)].copy()
+        filtered['membro_projeto'] = mp[mp['id_projeto'].isin(p_ids)].copy()
+        return filtered
+
+    if tipo == 'membro':
+        emp_id = usuario.get('id_empresa')
+        filtered['empresas'] = filtered['empresas'][filtered['empresas']['id'] == emp_id].copy()
+        proj_emp = filtered['projetos'][filtered['projetos']['id_empresa'] == emp_id].copy()
+        proj_emp_ids = proj_emp['id'].dropna().tolist()
+        mp_m = mp[(mp['id_membro'] == uid) & (mp['id_projeto'].isin(proj_emp_ids))].copy()
+        tasks_m = filtered['tarefas'][
+            (filtered['tarefas']['id_membro'] == uid) & (filtered['tarefas']['id_projeto'].isin(proj_emp_ids))
+        ].copy()
+        p_ids = sorted(set(mp_m['id_projeto'].dropna().tolist()) | set(tasks_m['id_projeto'].dropna().tolist()))
+        filtered['projetos'] = proj_emp[proj_emp['id'].isin(p_ids)].copy()
+        filtered['sprints'] = filtered['sprints'][filtered['sprints']['id_projeto'].isin(p_ids)].copy()
+        filtered['tarefas'] = tasks_m
+        filtered['membros'] = filtered['membros'][
+            (filtered['membros']['id'] == uid) & (filtered['membros']['id_empresa'] == emp_id)
+        ].copy()
+        filtered['membro_projeto'] = mp_m
+        filtered['demanda'] = filtered['demanda'].iloc[0:0].copy()
+        filtered['clientes'] = filtered['clientes'].iloc[0:0].copy()
+        return filtered
+
+    if tipo == 'cliente':
+        demanda_c = filtered['demanda'][filtered['demanda']['id_cliente'] == uid].copy()
+        p_ids = demanda_c['id_projeto'].dropna().unique().tolist()
+        filtered['demanda'] = demanda_c
+        filtered['projetos'] = filtered['projetos'][filtered['projetos']['id'].isin(p_ids)].copy()
+        c_ids = filtered['projetos']['id_empresa'].dropna().unique().tolist()
+        filtered['empresas'] = filtered['empresas'][filtered['empresas']['id'].isin(c_ids)].copy()
+        filtered['sprints'] = filtered['sprints'][filtered['sprints']['id_projeto'].isin(p_ids)].copy()
+        filtered['tarefas'] = filtered['tarefas'][filtered['tarefas']['id_projeto'].isin(p_ids)].copy()
+        filtered['clientes'] = filtered['clientes'][filtered['clientes']['id'] == uid].copy()
+        filtered['membros'] = filtered['membros'].iloc[0:0].copy()
+        filtered['membro_projeto'] = mp.iloc[0:0].copy()
+        return filtered
+
+    return filtered
 
 
 # ==========================================
@@ -378,9 +488,17 @@ def inserir_nova_empresa(config, id_empresa, nome, rep):
     return execute_command(config, query, (id_empresa, nome, rep), table='empresas')
 
 
-def inserir_novo_membro(config, id_membro, id_empresa, nome, email, cargo):
-    query = 'INSERT INTO {table} (id, id_empresa, nome, email, cargo) VALUES (%s, %s, %s, %s, %s);'
-    return execute_command(config, query, (id_membro, id_empresa, nome, email, cargo), table='membros')
+def inserir_novo_membro(config, id_membro, id_empresa, nome, email, cargo, perfil='membro', senha=None):
+    if perfil not in ('membro', 'chefe'):
+        return False
+    senha_hash = criptografar_em_hash(senha) if senha else ''
+    query = 'INSERT INTO {table} (id, id_empresa, nome, email, cargo, perfil, senha) VALUES (%s, %s, %s, %s, %s, %s, %s);'
+    return execute_command(
+        config,
+        query,
+        (id_membro, id_empresa, nome, email, cargo, perfil, senha_hash),
+        table='membros',
+    )
 
 
 def inserir_novo_cliente(config, nome, email, id_empresa):
@@ -402,12 +520,17 @@ def inserir_nova_sprint(config, id_projeto, is_done, data_in, data_fin):
     return execute_command(config, query, (id_projeto, is_done, data_in, data_fin), table='sprints')
 
 
-def inserir_nova_tarefa(config, id_projeto, descricao, estado='nao_iniciada', id_sprint=None, data_cria=None, data_fin=None):
+def inserir_nova_tarefa(config, id_projeto, descricao, estado='nao_iniciada', id_sprint=None, data_cria=None, data_fin=None, id_membro=None):
     query = (
-        'INSERT INTO {table} (id_projeto, id_sprint, estado, descricao, data_cria, data_fin) '
-        'VALUES (%s, %s, %s, %s, %s, %s);'
+        'INSERT INTO {table} (id_projeto, id_sprint, id_membro, estado, descricao, data_cria, data_fin) '
+        'VALUES (%s, %s, %s, %s, %s, %s, %s);'
     )
-    return execute_command(config, query, (id_projeto, id_sprint, estado, descricao, data_cria, data_fin), table='tarefas')
+    return execute_command(
+        config,
+        query,
+        (id_projeto, id_sprint, id_membro, estado, descricao, data_cria, data_fin),
+        table='tarefas',
+    )
 
 
 # ==========================================
@@ -425,10 +548,69 @@ def associar_tarefa_a_sprint(config, id_tarefa, id_sprint):
     return execute_command(config, query, (id_sprint, id_tarefa), table='tarefas')
 
 
+def associar_tarefa_a_membro(config, id_tarefa, id_membro):
+    """Atribui ou desatribui uma tarefa a um membro."""
+    query = 'UPDATE {table} SET id_membro = %s WHERE id = %s;'
+    return execute_command(config, query, (id_membro, id_tarefa), table='tarefas')
+
+
+def atualizar_perfil_membro(config, id_membro, perfil):
+    """Altera o perfil de um membro entre 'membro' e 'chefe'."""
+    if perfil not in ('membro', 'chefe'):
+        return False
+    query = 'UPDATE {table} SET perfil = %s WHERE id = %s;'
+    return execute_command(config, query, (perfil, id_membro), table='membros')
+
+
 def vincular_projeto_cliente(config, id_projeto, id_cliente):
     """Associa um projeto existente a um cliente na tabela demanda."""
     query = 'INSERT INTO {table} (id_projeto, id_cliente) VALUES (%s, %s);'
     return execute_command(config, query, (id_projeto, id_cliente), table='demanda')
+
+
+def listar_membro_projeto(config, id_projeto=None, id_membro=None):
+    clauses = []
+    params = []
+    if id_projeto is not None:
+        clauses.append('id_projeto = %s')
+        params.append(id_projeto)
+    if id_membro is not None:
+        clauses.append('id_membro = %s')
+        params.append(id_membro)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return fetch_query(config, f'SELECT * FROM {{table}}{where} ORDER BY id_projeto, id_membro;', tuple(params), table='membro_projeto')
+
+
+def vincular_membro_projeto(config, id_projeto, id_membro):
+    """Associa um membro a um projeto na tabela membro_projeto."""
+    query = 'INSERT INTO {table} (id_projeto, id_membro) VALUES (%s, %s);'
+    return execute_command(config, query, (id_projeto, id_membro), table='membro_projeto')
+
+
+def desvincular_membro_projeto(config, id_projeto, id_membro):
+    """Remove a associação entre um membro e um projeto."""
+    query = 'DELETE FROM {table} WHERE id_projeto = %s AND id_membro = %s;'
+    return execute_command(config, query, (id_projeto, id_membro), table='membro_projeto')
+
+
+def listar_admins(config):
+    return fetch_query(config, 'SELECT id, nome, email FROM {table} ORDER BY id;', table='admins')
+
+
+def obter_admin(config, id_admin):
+    return fetch_query(config, 'SELECT id, nome, email FROM {table} WHERE id = %s;', (id_admin,), fetchone=True, table='admins')
+
+
+def inserir_novo_admin(config, nome, email, senha):
+    if not nome or not email or not senha:
+        return False
+    senha_hash = criptografar_em_hash(senha)
+    query = 'INSERT INTO {table} (nome, email, senha) VALUES (%s, %s, %s);'
+    return execute_command(config, query, (nome, email, senha_hash), table='admins')
+
+
+def deletar_admin(config, id_admin):
+    return execute_command(config, 'DELETE FROM {table} WHERE id = %s;', (id_admin,), table='admins')
 
 
 # ==========================================
@@ -469,6 +651,178 @@ def desvincular_projeto_cliente(config, id_projeto, id_cliente):
 # FUNÇÕES DE AUTENTICAÇÃO E SENHAS
 # ==========================================
 
+DEFAULT_INITIAL_PASSWORD_HASH = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+
+
+def garantir_colunas_senha(config) -> dict[str, bool]:
+    """Garante de forma idempotente as tabelas/colunas de autenticação, perfis e alocações."""
+    connection, database = _open_connection(config)
+    db = validate_name(database)
+    migrated: dict[str, bool] = {}
+    try:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            def _table_physical(logical: str) -> str | None:
+                cursor.execute(
+                    'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES '
+                    'WHERE TABLE_SCHEMA = %s AND LOWER(TABLE_NAME) = %s',
+                    (database, logical.lower()),
+                )
+                rows = cursor.fetchall()
+                names = {r['TABLE_NAME'] if isinstance(r, dict) else r[0] for r in rows}
+                if not names:
+                    return None
+                return logical if logical in names else next(iter(names))
+
+            def _has_col(physical: str, col_name: str) -> bool:
+                cursor.execute(
+                    'SELECT COUNT(*) AS total FROM INFORMATION_SCHEMA.COLUMNS '
+                    'WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND LOWER(COLUMN_NAME) = %s',
+                    (database, physical, col_name.lower()),
+                )
+                row = cursor.fetchone()
+                return (row['total'] if isinstance(row, dict) else row[0]) > 0
+
+            # 1. Coluna 'senha' em clientes e membros
+            for logical_table in ('clientes', 'membros'):
+                physical_name = _table_physical(logical_table)
+                if not physical_name or _has_col(physical_name, 'senha'):
+                    migrated[logical_table] = False
+                else:
+                    tbl = validate_name(physical_name)
+                    cursor.execute(
+                        f"ALTER TABLE {db}.{tbl} ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT ''"
+                    )
+                    cursor.execute(
+                        f"UPDATE {db}.{tbl} SET senha = %s WHERE id = 1 AND senha = ''",
+                        (DEFAULT_INITIAL_PASSWORD_HASH,),
+                    )
+                    connection.commit()
+                    migrated[logical_table] = True
+
+            # 2. Tabela admins
+            admins_tbl = _table_physical('admins')
+            if not admins_tbl:
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {db}.`admins` (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        nome VARCHAR(255) NOT NULL,
+                        email VARCHAR(255) NOT NULL UNIQUE,
+                        senha VARCHAR(255) NOT NULL DEFAULT ''
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                connection.commit()
+                admins_tbl = 'admins'
+                migrated['admins'] = True
+            else:
+                migrated['admins'] = False
+
+            admins_valid = validate_name(admins_tbl)
+            cursor.execute(f'SELECT COUNT(*) AS total FROM {db}.{admins_valid}')
+            cnt_admins = cursor.fetchone()
+            if (cnt_admins['total'] if isinstance(cnt_admins, dict) else cnt_admins[0]) == 0:
+                cursor.execute(
+                    f'INSERT INTO {db}.{admins_valid} (nome, email, senha) VALUES (%s, %s, %s)',
+                    ('Administrador EJFlow', 'admin@ejflow.com', DEFAULT_INITIAL_PASSWORD_HASH),
+                )
+                connection.commit()
+
+            # 3. Coluna 'perfil' em membros
+            membros_tbl = _table_physical('membros')
+            if membros_tbl and not _has_col(membros_tbl, 'perfil'):
+                m_valid = validate_name(membros_tbl)
+                cursor.execute(
+                    f"ALTER TABLE {db}.{m_valid} ADD COLUMN perfil VARCHAR(20) NOT NULL DEFAULT 'membro'"
+                )
+                cursor.execute(
+                    f"UPDATE {db}.{m_valid} SET perfil = 'chefe' WHERE id = 2"
+                )
+                cursor.execute(
+                    f"UPDATE {db}.{m_valid} SET senha = %s WHERE id = 2 AND senha = ''",
+                    (DEFAULT_INITIAL_PASSWORD_HASH,),
+                )
+                connection.commit()
+                migrated['membros_perfil'] = True
+            else:
+                migrated['membros_perfil'] = False
+
+            # 4. Tabela membro_projeto
+            projetos_tbl = _table_physical('projetos')
+            mp_tbl = _table_physical('membro_projeto')
+            if not mp_tbl and projetos_tbl and membros_tbl:
+                p_valid = validate_name(projetos_tbl)
+                m_valid = validate_name(membros_tbl)
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {db}.`membro_projeto` (
+                        id_projeto INT NOT NULL,
+                        id_membro INT NOT NULL,
+                        CONSTRAINT pk_membro_projeto PRIMARY KEY (id_projeto, id_membro),
+                        CONSTRAINT fk_mp_projeto FOREIGN KEY (id_projeto) REFERENCES {db}.{p_valid}(id) ON DELETE CASCADE,
+                        CONSTRAINT fk_mp_membro FOREIGN KEY (id_membro) REFERENCES {db}.{m_valid}(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                connection.commit()
+                mp_tbl = 'membro_projeto'
+                migrated['membro_projeto'] = True
+            else:
+                migrated['membro_projeto'] = False
+
+            if mp_tbl and projetos_tbl and membros_tbl:
+                mp_valid = validate_name(mp_tbl)
+                cursor.execute(f'SELECT COUNT(*) AS total FROM {db}.{mp_valid}')
+                cnt_mp = cursor.fetchone()
+                if (cnt_mp['total'] if isinstance(cnt_mp, dict) else cnt_mp[0]) == 0:
+                    p_valid = validate_name(projetos_tbl)
+                    m_valid = validate_name(membros_tbl)
+                    cursor.execute(f'SELECT id FROM {db}.{p_valid}')
+                    existing_p = {r['id'] for r in cursor.fetchall()}
+                    cursor.execute(f'SELECT id FROM {db}.{m_valid}')
+                    existing_m = {r['id'] for r in cursor.fetchall()}
+                    for pid, mid in ((101, 1), (101, 2), (101, 3), (102, 2), (102, 3), (103, 4), (103, 5), (104, 6)):
+                        if pid in existing_p and mid in existing_m:
+                            cursor.execute(
+                                f'INSERT IGNORE INTO {db}.{mp_valid} (id_projeto, id_membro) VALUES (%s, %s)',
+                                (pid, mid),
+                            )
+                    connection.commit()
+
+            # 5. Coluna 'id_membro' em tarefas
+            tarefas_tbl = _table_physical('tarefas')
+            if tarefas_tbl and membros_tbl and not _has_col(tarefas_tbl, 'id_membro'):
+                t_valid = validate_name(tarefas_tbl)
+                m_valid = validate_name(membros_tbl)
+                cursor.execute(
+                    f'ALTER TABLE {db}.{t_valid} ADD COLUMN id_membro INT NULL, '
+                    f'ADD CONSTRAINT fk_tarefa_membro FOREIGN KEY (id_membro) REFERENCES {db}.{m_valid}(id) ON DELETE SET NULL'
+                )
+                cursor.execute(f'SELECT id FROM {db}.{m_valid}')
+                existing_m = {r['id'] for r in cursor.fetchall()}
+                for mid, tids in ((1, (1, 2, 3)), (3, (4, 5, 6, 7)), (4, (8, 9)), (6, (10, 11))):
+                    if mid in existing_m:
+                        placeholders = ', '.join(['%s'] * len(tids))
+                        cursor.execute(
+                            f'UPDATE {db}.{t_valid} SET id_membro = %s WHERE id IN ({placeholders}) AND id_membro IS NULL',
+                            (mid, *tids),
+                        )
+                connection.commit()
+                migrated['tarefas_membro'] = True
+            else:
+                migrated['tarefas_membro'] = False
+
+            return migrated
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+garantir_schema_perfis = garantir_colunas_senha
+
+
 def criptografar_em_hash(texto) -> str:
     """Retorna o hash SHA-256 em hexadecimal do texto informado."""
     return hashlib.sha256(str(texto).encode('utf-8')).hexdigest()
@@ -478,22 +832,35 @@ Criptografar_Em_Hash = criptografar_em_hash
 
 
 def autenticar_usuario(config, email, senha):
-    """Verifica credenciais comparando o hash SHA-256 da senha digitada com o banco."""
+    """Verifica credenciais em admins, membros (chefe/membro) e clientes."""
     if not email or not senha:
         return None
 
     senha_hash = criptografar_em_hash(senha)
 
+    admin = fetch_query(
+        config,
+        "SELECT id, nome, email FROM {table} "
+        "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
+        (email, senha_hash),
+        fetchone=True,
+        table='admins',
+    )
+    if admin:
+        admin['tipo'] = 'admin'
+        return admin
+
     membro = fetch_query(
         config,
-        "SELECT id, id_empresa, nome, email, cargo FROM {table} "
+        "SELECT id, id_empresa, nome, email, cargo, perfil FROM {table} "
         "WHERE LOWER(TRIM(email)) = LOWER(TRIM(%s)) AND senha = %s AND senha <> '' LIMIT 1;",
         (email, senha_hash),
         fetchone=True,
         table='membros',
     )
     if membro:
-        membro['tipo'] = 'membro'
+        perfil = (membro.get('perfil') or 'membro').strip().lower()
+        membro['tipo'] = 'chefe' if perfil == 'chefe' else 'membro'
         return membro
 
     cliente = fetch_query(
@@ -511,11 +878,21 @@ def autenticar_usuario(config, email, senha):
     return None
 
 
+def _tabela_por_tipo_usuario(tipo_usuario: str) -> str | None:
+    if tipo_usuario == 'admin':
+        return 'admins'
+    if tipo_usuario in ('membro', 'chefe'):
+        return 'membros'
+    if tipo_usuario == 'cliente':
+        return 'clientes'
+    return None
+
+
 def definir_senha_usuario(config, tipo_usuario, id_usuario, nova_senha):
-    """Criptografa a nova senha em SHA-256 e salva na tabela 'membros' ou 'clientes'."""
-    if tipo_usuario not in ('membro', 'cliente') or not nova_senha:
+    """Criptografa a nova senha em SHA-256 e salva na tabela correspondente ao tipo."""
+    tabela = _tabela_por_tipo_usuario(tipo_usuario)
+    if not tabela or not nova_senha:
         return False
-    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
     senha_hash = criptografar_em_hash(nova_senha)
     return execute_command(
         config,
@@ -526,10 +903,10 @@ def definir_senha_usuario(config, tipo_usuario, id_usuario, nova_senha):
 
 
 def remover_senha_usuario(config, tipo_usuario, id_usuario):
-    """Remove a senha (define como '') revogando o login do 'membro' ou 'cliente'."""
-    if tipo_usuario not in ('membro', 'cliente'):
+    """Remove a senha (define como '') revogando o login do usuário."""
+    tabela = _tabela_por_tipo_usuario(tipo_usuario)
+    if not tabela:
         return False
-    tabela = 'membros' if tipo_usuario == 'membro' else 'clientes'
     return execute_command(
         config,
         "UPDATE {table} SET senha = '' WHERE id = %s;",

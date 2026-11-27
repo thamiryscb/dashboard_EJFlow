@@ -221,3 +221,44 @@ FROM sprints WHERE id_projeto=101;
 -- MEDIA DE DIAS DA SPRINT
 SELECT AVG(DATEDIFF(data_fin, data_in)) AS media_dias_por_sprint FROM sprints;
 
+-- ============================================================================
+-- ESTRUTURA DE PERFIS (ADMIN, CHEFE, MEMBRO, CLIENTE) E ASSOCIAÇÕES
+-- ============================================================================
+
+ALTER TABLE membros
+ADD COLUMN perfil VARCHAR(20) NOT NULL DEFAULT 'membro';
+
+ALTER TABLE TAREFAS
+ADD COLUMN id_membro INT NULL,
+ADD CONSTRAINT fk_tarefa_membro FOREIGN KEY (id_membro) REFERENCES membros(id) ON DELETE SET NULL;
+
+CREATE TABLE admins (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    senha VARCHAR(255) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE membro_projeto (
+    id_projeto INT NOT NULL,
+    id_membro INT NOT NULL,
+    CONSTRAINT pk_membro_projeto PRIMARY KEY (id_projeto, id_membro),
+    CONSTRAINT fk_mp_projeto FOREIGN KEY (id_projeto) REFERENCES projetos(id) ON DELETE CASCADE,
+    CONSTRAINT fk_mp_membro FOREIGN KEY (id_membro) REFERENCES membros(id) ON DELETE CASCADE
+);
+
+INSERT INTO admins (nome, email, senha) VALUES
+('Administrador EJFlow', 'admin@ejflow.com', 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063');
+
+UPDATE membros
+SET perfil = 'chefe',
+    senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 2;
+
+INSERT INTO membro_projeto (id_projeto, id_membro) VALUES
+(101, 1),
+(101, 2),
+(102, 2);
+
+UPDATE TAREFAS SET id_membro = 1 WHERE id IN (1, 2, 3);
+
