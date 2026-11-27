@@ -115,6 +115,25 @@ INSERT INTO TAREFAS (id_projeto, id_sprint, estado, descricao, data_cria, data_f
 (102, 3, 'em_andamento', 'Criar wireframes das telas principais do aplicativo', '2026-03-05 08:30:00', NULL),
 (103, 4, 'concluida', 'Mapear requisitos de regras de negócio de férias', '2026-02-10 09:00:00', '2026-02-15 16:00:00');
 
+
+
+-- Adiciona a coluna das senhas em clientes e membros
+ALTER TABLE clientes
+ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT '';
+
+ALTER TABLE membros
+ADD COLUMN senha VARCHAR(255) NOT NULL DEFAULT '';
+
+-- 2. Define a senha apenas para o cliente e o membro de ID 1
+UPDATE clientes
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1;
+
+UPDATE membros
+SET senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 1;
+
+
 -- DESENVOLVER CONSULTAS COM JOIN, FILTROS E AGREGAÇÕES. 
 -- ASSOCIAR O PROJETO AO CLIENTE
 SELECT * FROM projetos 
@@ -201,4 +220,45 @@ FROM sprints WHERE id_projeto=101;
 
 -- MEDIA DE DIAS DA SPRINT
 SELECT AVG(DATEDIFF(data_fin, data_in)) AS media_dias_por_sprint FROM sprints;
+
+-- ============================================================================
+-- ESTRUTURA DE PERFIS (ADMIN, CHEFE, MEMBRO, CLIENTE) E ASSOCIAÇÕES
+-- ============================================================================
+
+ALTER TABLE membros
+ADD COLUMN perfil VARCHAR(20) NOT NULL DEFAULT 'membro';
+
+ALTER TABLE TAREFAS
+ADD COLUMN id_membro INT NULL,
+ADD CONSTRAINT fk_tarefa_membro FOREIGN KEY (id_membro) REFERENCES membros(id) ON DELETE SET NULL;
+
+CREATE TABLE admins (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    senha VARCHAR(255) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE membro_projeto (
+    id_projeto INT NOT NULL,
+    id_membro INT NOT NULL,
+    CONSTRAINT pk_membro_projeto PRIMARY KEY (id_projeto, id_membro),
+    CONSTRAINT fk_mp_projeto FOREIGN KEY (id_projeto) REFERENCES projetos(id) ON DELETE CASCADE,
+    CONSTRAINT fk_mp_membro FOREIGN KEY (id_membro) REFERENCES membros(id) ON DELETE CASCADE
+);
+
+INSERT INTO admins (nome, email, senha) VALUES
+('Administrador EJFlow', 'admin@ejflow.com', 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063');
+
+UPDATE membros
+SET perfil = 'chefe',
+    senha = 'd482c10b3d4d2a198042e6c042e7a6d292dd4d4abd4bf7820813fcc316135063'
+WHERE id = 2;
+
+INSERT INTO membro_projeto (id_projeto, id_membro) VALUES
+(101, 1),
+(101, 2),
+(102, 2);
+
+UPDATE TAREFAS SET id_membro = 1 WHERE id IN (1, 2, 3);
 
