@@ -4,3 +4,24 @@ __pycache__/
 *.pyc
 .venv/
 exemplo_crud_fastapi.py
+
+# Ambiente virtual
+.venv/
+venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Pytest
+.pytest_cache/
+
+# Cobertura
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Credenciais
+.env
+.env.test

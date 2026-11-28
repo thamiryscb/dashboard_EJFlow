@@ -1,0 +1,43 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    name: Testes automatizados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Subir MySQL de testes
+        run: docker compose -p ejflow-test -f compose.test.yaml up -d --wait
+
+      - name: Rodar testes com cobertura
+        run: python -m pytest --cov=backend --cov-report=term-missing
+
+      - name: Mostrar logs do MySQL em caso de falha
+        if: failure()
+        run: docker compose -p ejflow-test -f compose.test.yaml logs db-test
+
+      - name: Parar MySQL de testes
+        if: always()
+        run: docker compose -p ejflow-test -f compose.test.yaml down
+
+  build:
+    name: Build dos contêineres
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build do backend
+        run: docker build --target backend -t ejflow-backend:ci .
+
+      - name: Build do frontend
+        run: docker build --target frontend -t ejflow-frontend:ci .
